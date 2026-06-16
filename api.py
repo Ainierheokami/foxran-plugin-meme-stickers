@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from app.api.endpoints.auth import require_auth
 from app.logger import setup_logger
 from app.runtime.paths import STICKER_ASSETS_DIR
-from app.tools.plugins.meme_stickers import (
+from app.tools.plugins.meme_stickers.tool import (
     build_sticker_asset_url,
     build_sticker_send_url,
     persist_sticker_source,
