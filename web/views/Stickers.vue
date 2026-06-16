@@ -47,7 +47,7 @@
         </div>
         <div class="min-w-0">
           <div class="font-medium">拖入、粘贴图片或批量选择文件</div>
-          <div class="text-xs text-muted-foreground">支持 PNG、JPG、WebP、GIF；也可复制多行图片 URL 后粘贴导入</div>
+          <div class="text-xs text-muted-foreground">支持 PNG、JPG、WebP、GIF；也可复制多行图�?URL 后粘贴导�?/div>
         </div>
       </div>
 
@@ -85,7 +85,7 @@
           <textarea
             v-model="pasteText"
             class="min-h-20 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm outline-none focus:ring-1 focus:ring-ring"
-            placeholder="粘贴图片 URL，可一行一个；也可以直接在页面按 Ctrl+V 粘贴剪贴板图片"
+            placeholder="粘贴图片 URL，可一行一个；也可以直接在页面�?Ctrl+V 粘贴剪贴板图�?
             @paste="handlePaste"
           />
         </div>
@@ -95,8 +95,7 @@
             导入文本 URL
           </button>
           <div class="text-xs text-muted-foreground">
-            文本会提取 http(s)、/api/media/cache/ 与 file:// 图片地址。
-          </div>
+            文本会提�?http(s)�?api/media/cache/ �?file:// 图片地址�?          </div>
         </div>
       </div>
     </section>
@@ -107,9 +106,9 @@
           <button class="btn-secondary h-8 px-3" :disabled="items.length === 0" @click="toggleSelectAll">
             <CheckSquare v-if="allVisibleSelected" class="h-4 w-4" />
             <Square v-else class="h-4 w-4" />
-            {{ allVisibleSelected ? '取消全选' : '全选当前' }}
+            {{ allVisibleSelected ? '取消全�? : '全选当�? }}
           </button>
-          <span class="text-muted-foreground">已选 {{ selectedIds.size }} / {{ items.length }}</span>
+          <span class="text-muted-foreground">已�?{{ selectedIds.size }} / {{ items.length }}</span>
           <button v-if="selectedIds.size" class="btn-ghost h-8 px-2" @click="clearSelection">
             <X class="h-4 w-4" />
             清空
@@ -141,7 +140,7 @@
 
     <section class="rounded-md border bg-card p-3">
       <div class="grid gap-2 md:grid-cols-[1fr_160px_220px_auto]">
-        <input v-model="urlForm.url" class="field" placeholder="图片 URL 或 /api/media/cache/..." />
+        <input v-model="urlForm.url" class="field" placeholder="图片 URL �?/api/media/cache/..." />
         <input v-model="urlForm.emotion" class="field" placeholder="情绪" />
         <input v-model="urlForm.tags" class="field" placeholder="标签，逗号分隔" />
         <button class="btn-secondary h-9 px-3" :disabled="!urlForm.url || urlSaving" @click="addUrlSticker">
@@ -160,17 +159,15 @@
     </div>
 
     <section class="rounded-md border bg-card px-3 py-2 text-xs text-muted-foreground">
-      <span class="font-medium text-foreground">标注建议：</span>
-      情绪写用途分类，如 happy、thanks、agree、tease、awkward、surprised、comfort、sorry、confused；标签写触发场景，如 开心、赞同、捧场、疑惑、安慰、调侃、道歉、震惊、卖萌、摸鱼。选中表情后可点 LLM 打标自动补齐。
-    </section>
+      <span class="font-medium text-foreground">标注建议�?/span>
+      情绪写用途分类，�?happy、thanks、agree、tease、awkward、surprised、comfort、sorry、confused；标签写触发场景，如 开心、赞同、捧场、疑惑、安慰、调侃、道歉、震惊、卖萌、摸鱼。选中表情后可�?LLM 打标自动补齐�?    </section>
 
     <section class="min-h-[320px]">
       <div v-if="loading && items.length === 0" class="rounded-md border p-10 text-center text-sm text-muted-foreground">
-        加载中...
+        加载�?..
       </div>
       <div v-else-if="items.length === 0" class="rounded-md border p-10 text-center text-sm text-muted-foreground">
-        暂无表情包，拖入几张图开始建立池子
-      </div>
+        暂无表情包，拖入几张图开始建立池�?      </div>
       <div v-else class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         <article
           v-for="item in items"
@@ -235,8 +232,7 @@
             </div>
             <div class="text-lg font-semibold">正在进行视觉打标</div>
             <div class="max-w-sm text-center text-sm text-muted-foreground">
-              视觉模型正在逐张分析 {{ selectedIds.size }} 个表情包，生成 summary、emotion 和 tags。图片多时会稍慢一些。
-            </div>
+              视觉模型正在逐张分析 {{ selectedIds.size }} 个表情包，生�?summary、emotion �?tags。图片多时会稍慢一些�?            </div>
             <div class="tagging-progress">
               <span />
             </div>
@@ -268,8 +264,8 @@ import {
   X,
 } from 'lucide-vue-next'
 import { autoTagStickers, bulkTagStickers, createSticker, deleteSticker, listStickers, updateSticker, uploadStickers, type StickerItem } from '../services/stickers'
-import { getApiOrigin } from '../services/api'
-import { toast, showConfirm } from '../lib/feedback'
+import { getApiOrigin } from '@/services/api'
+import { toast, showConfirm } from '@/lib/feedback'
 
 type StickerDraft = {
   summary: string
@@ -399,7 +395,7 @@ async function fetchStickers() {
     const visibleIds = new Set(items.value.map((item) => item.id))
     selectedIds.value = new Set([...selectedIds.value].filter((id) => visibleIds.has(id)))
   } catch (e) {
-    showError('加载表情包失败')
+    showError('加载表情包失�?)
   } finally {
     loading.value = false
   }
@@ -419,8 +415,8 @@ async function uploadFiles(files: File[]) {
       tags: parseTags(uploadMeta.tags),
     })
     await fetchStickers()
-    const failureText = result.failures.length ? `，${result.failures.length} 个失败` : ''
-    showNotice(`已上传 ${result.items.length} 个表情包${failureText}`)
+    const failureText = result.failures.length ? `�?{result.failures.length} 个失败` : ''
+    showNotice(`已上�?${result.items.length} 个表情包${failureText}`)
   } catch (e) {
     showError('上传失败')
   } finally {
@@ -499,7 +495,7 @@ async function applyBulkTags() {
       mode: bulkMode.value,
     })
     await fetchStickers()
-    showNotice(`已更新 ${ids.length} 个表情包`)
+    showNotice(`已更�?${ids.length} 个表情包`)
   } catch (e) {
     showError('批量打标失败')
   } finally {
@@ -511,7 +507,7 @@ async function applyAutoTags() {
   const ids = [...selectedIds.value]
   if (ids.length === 0) return
   if (ids.length > 12) {
-    showError('一次最多选择 12 个表情包做视觉打标')
+    showError('一次最多选择 12 个表情包做视觉打�?)
     return
   }
   autoTagging.value = true
@@ -519,7 +515,7 @@ async function applyAutoTags() {
     const result = await autoTagStickers({ ids, overwrite: autoOverwrite.value })
     await fetchStickers()
     const skipped = result.skipped?.length || 0
-    showNotice(`LLM 已自动标注 ${result.updated} 个表情包${skipped ? `，${skipped} 个未识别已跳过` : ''}`)
+    showNotice(`LLM 已自动标�?${result.updated} 个表情包${skipped ? `�?{skipped} 个未识别已跳过` : ''}`)
   } catch (e: any) {
     const detail = e?.response?.data?.detail
     showError(detail || 'LLM 自动打标失败')
@@ -540,7 +536,7 @@ async function addUrlSticker() {
     urlForm.url = ''
     urlForm.summary = ''
     await fetchStickers()
-    showNotice('已添加 URL 表情包')
+    showNotice('已添�?URL 表情�?)
   } catch (e) {
     showError('添加 URL 失败')
   } finally {
@@ -551,7 +547,7 @@ async function addUrlSticker() {
 async function importPastedUrls() {
   const urls = extractImageUrls(pasteText.value)
   if (urls.length === 0) {
-    showError('没有识别到图片 URL')
+    showError('没有识别到图�?URL')
     return
   }
 
@@ -559,7 +555,7 @@ async function importPastedUrls() {
   try {
     await Promise.all(urls.map((url) => createSticker({
       url,
-      summary: urlForm.summary || uploadMeta.summary || '粘贴导入表情包',
+      summary: urlForm.summary || uploadMeta.summary || '粘贴导入表情�?,
       emotion: urlForm.emotion || uploadMeta.emotion,
       tags: parseTags(urlForm.tags || uploadMeta.tags),
     })))
@@ -593,12 +589,12 @@ async function toggleEnabled(item: StickerItem) {
     await updateSticker(item.id, { enabled: !item.enabled })
     await fetchStickers()
   } catch (e) {
-    showError('状态更新失败')
+    showError('状态更新失�?)
   }
 }
 
 async function removeSticker(item: StickerItem) {
-  if (!await showConfirm(`确定删除表情包 ${item.id} 吗？`)) return
+  if (!await showConfirm(`确定删除表情�?${item.id} 吗？`)) return
   try {
     await deleteSticker(item.id)
     selectedIds.value.delete(item.id)
