@@ -239,16 +239,8 @@ async def get_sticker_asset(filename: str):
 
 @router.get("/api/stickers/send/{filename:path}")
 async def get_sticker_send_asset(filename: str):
-    from app.logger import setup_logger
-    logger = setup_logger(__name__)
-    url_to_resolve = build_sticker_send_url(filename)
-    path, _kind = resolve_sticker_storage_url(url_to_resolve)
-    logger.warning(f"[DEBUG STICKER] filename={filename}, url_to_resolve={url_to_resolve}, path={path}, _kind={_kind}")
+    path, _kind = resolve_sticker_storage_url(build_sticker_send_url(filename))
     if not path:
-        logger.warning(f"[DEBUG STICKER] 404: path is empty")
-        raise HTTPException(status_code=404, detail="表情包发送素材不存在")
-    if not path.exists():
-        logger.warning(f"[DEBUG STICKER] 404: path does not exist on disk: {path}")
         raise HTTPException(status_code=404, detail="表情包发送素材不存在")
     return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream")
 

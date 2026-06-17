@@ -86,11 +86,11 @@ def to_absolute_url(url: str) -> str:
 
 
 def build_sticker_asset_url(filename: str) -> str:
-    return to_absolute_url(f"{ASSET_URL_PREFIX}/{filename}")
+    return f"{ASSET_URL_PREFIX}/{filename}"
 
 
 def build_sticker_send_url(filename: str) -> str:
-    return to_absolute_url(f"{SEND_URL_PREFIX}/{filename}")
+    return f"{SEND_URL_PREFIX}/{filename}"
 
 
 def _safe_filename(value: str, fallback: str = "sticker") -> str:
@@ -238,7 +238,7 @@ def _get_send_url(item: Dict[str, Any]) -> str:
     if cached_send_url:
         path, _kind = resolve_sticker_storage_url(cached_send_url)
         if path:
-            return to_absolute_url(cached_send_url)
+            return cached_send_url
 
     url = str(item.get("url") or "")
     if not url:
@@ -246,12 +246,12 @@ def _get_send_url(item: Dict[str, Any]) -> str:
 
     source_path = _resolve_sticker_source_path(item)
     if not source_path or not source_path.exists():
-        return to_absolute_url(url)
+        return url
 
     content = source_path.read_bytes()
     compressed = _compress_image_bytes(content)
     if not compressed:
-        return to_absolute_url(url)
+        return url
 
     original_id = str(item.get("id") or source_path.stem)
     STICKER_SEND_DIR.mkdir(parents=True, exist_ok=True)
