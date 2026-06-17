@@ -268,8 +268,13 @@ import {
   X,
 } from 'lucide-vue-next'
 import { autoTagStickers, bulkTagStickers, createSticker, deleteSticker, listStickers, updateSticker, uploadStickers, type StickerItem } from '../services/stickers'
-import { getApiOrigin } from '@/services/api'
-import { toast, showConfirm } from '@/lib/feedback'
+import { getApiOrigin } from '../services/api'
+const toast = {
+  success: (msg: string) => { console.log(msg); alert(msg) },
+  error: (msg: string) => { console.error(msg); alert('Error: ' + msg) },
+  info: (msg: string) => console.log(msg)
+}
+const showConfirm = async (msg: string) => confirm(msg)
 
 type StickerDraft = {
   summary: string
