@@ -1,7 +1,7 @@
 import asyncio
 import json
-from .tool import MemeStickerTool, resolve_meme_schema
-from .api import router
+from .backend.tool import MemeStickerTool, resolve_meme_schema
+from .backend.api import router
 from app.utils.hooks import plugin_hooks
 from app.logger import setup_logger
 
@@ -37,7 +37,7 @@ async def process_outbound_message_chain(message_chain, session_ctx=None, **kwar
 # 注册 Hook：注入 Prompt
 @plugin_hooks.register("before_prompt_build")
 async def before_prompt_build(context_vars, session_ctx=None, current_message=None, tool_manager=None, **kwargs):
-    from .tool import _load_library
+    from .backend.tool import _load_library
     import time
     
     if not current_message or current_message.role != "user":
