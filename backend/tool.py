@@ -74,12 +74,23 @@ def _make_id(url: str) -> str:
     return hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]
 
 
+def to_absolute_url(url: str) -> str:
+    if url.startswith("/"):
+        try:
+            from app.config.web_api_config import get_public_base_url
+            base = get_public_base_url()
+            return f"{base}{url}"
+        except Exception:
+            pass
+    return url
+
+
 def build_sticker_asset_url(filename: str) -> str:
-    return f"{ASSET_URL_PREFIX}/{filename}"
+    return to_absolute_url(f"{ASSET_URL_PREFIX}/{filename}")
 
 
 def build_sticker_send_url(filename: str) -> str:
-    return f"{SEND_URL_PREFIX}/{filename}"
+    return to_absolute_url(f"{SEND_URL_PREFIX}/{filename}")
 
 
 def _safe_filename(value: str, fallback: str = "sticker") -> str:
@@ -227,7 +238,7 @@ def _get_send_url(item: Dict[str, Any]) -> str:
     if cached_send_url:
         path, _kind = resolve_sticker_storage_url(cached_send_url)
         if path:
-            return cached_send_url
+            return to_absolute_url(cached_send_url)
 
     url = str(item.get("url") or "")
     if not url:
@@ -235,12 +246,12 @@ def _get_send_url(item: Dict[str, Any]) -> str:
 
     source_path = _resolve_sticker_source_path(item)
     if not source_path or not source_path.exists():
-        return url
+        return to_absolute_url(url)
 
     content = source_path.read_bytes()
     compressed = _compress_image_bytes(content)
     if not compressed:
-        return url
+        return to_absolute_url(url)
 
     original_id = str(item.get("id") or source_path.stem)
     STICKER_SEND_DIR.mkdir(parents=True, exist_ok=True)
@@ -345,7 +356,7 @@ def resolve_meme_schema(schema: MemeSchema, session_ctx: Any = None) -> Optional
     if not selected:
         return None
     return ImageSchema(
-        url=str(selected.get("send_url") or selected.get("url") or ""),
+        url=to_absolute_url(str(selected.get("send_url") or selected.get("url") or "")),
         summary=str(schema.summary or selected.get("summary") or "表情包"),
     )
 
@@ -479,14 +490,7 @@ class MemeStickerTool(BaseTool):
             summary=str(selected.get("summary") or "表情包"),
         )
         if args.allow_send:
-            send_url = str(selected.get("send_url") or selected.get("url") or "")
-            if send_url.startswith("/"):
-                try:
-                    from app.config.web_api_config import get_public_base_url
-                    base_url = get_public_base_url()
-                    send_url = f"{base_url}{send_url}"
-                except Exception:
-                    pass
+            send_url = to_absolute_url(str(selected.get("send_url") or selected.get("url") or ""))
             summary = str(selected.get("summary") or "")
             return f"[image,url={send_url},summary={summary}]"
         tags = ", ".join(selected.get("tags") or [])
