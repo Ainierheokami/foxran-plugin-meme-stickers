@@ -482,24 +482,8 @@ class MemeStickerTool(BaseTool):
             send_url = str(selected.get("send_url") or selected.get("url") or "")
             if send_url.startswith("/"):
                 try:
-                    import yaml
-                    from pathlib import Path
-                    base_url = None
-                    server_cfg_path = Path("config/server_config.yaml")
-                    if server_cfg_path.exists():
-                        data = yaml.safe_load(server_cfg_path.read_text(encoding="utf-8")) or {}
-                        for key in ("base_url", "external_base_url", "public_base_url"):
-                            if data.get(key):
-                                base_url = str(data[key]).strip().rstrip("/")
-                                break
-                    if not base_url:
-                        from app.config.web_api_config import load_web_api_config
-                        cfg = load_web_api_config()
-                        host = cfg.get("server", {}).get("host", "127.0.0.1")
-                        port = cfg.get("server", {}).get("port", 2323)
-                        if host in ("0.0.0.0", "::", ""):
-                            host = "127.0.0.1"
-                        base_url = f"http://{host}:{port}"
+                    from app.config.web_api_config import get_public_base_url
+                    base_url = get_public_base_url()
                     send_url = f"{base_url}{send_url}"
                 except Exception:
                     pass
