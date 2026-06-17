@@ -480,9 +480,18 @@ class MemeStickerTool(BaseTool):
         )
         if args.allow_send:
             send_url = str(selected.get("send_url") or selected.get("url") or "")
-            path, _ = resolve_sticker_storage_url(send_url)
-            if path and path.exists():
-                send_url = f"file:///{path.absolute().as_posix()}"
+            if send_url.startswith("/"):
+                try:
+                    from app.config.web_api_config import load_web_api_config
+                    cfg = load_web_api_config()
+                    host = cfg.get("server", {}).get("host", "127.0.0.1")
+                    port = cfg.get("server", {}).get("port", 2323)
+                    if host == "0.0.0.0":
+                        host = "127.0.0.1"
+                    base_url = f"http://{host}:{port}"
+                    send_url = f"{base_url}{send_url}"
+                except Exception:
+                    pass
             summary = str(selected.get("summary") or "")
             return f"[image,url={send_url},summary={summary}]"
         tags = ", ".join(selected.get("tags") or [])
