@@ -1,6 +1,6 @@
 import asyncio
 import json
-from .backend.tool import MemeStickerTool, resolve_meme_schema
+from .backend.tool import MemeStickerTool, resolve_meme_schema, load_tools
 from .backend.api import router
 from app.utils.hooks import plugin_hooks
 from app.logger import setup_logger
@@ -135,4 +135,4 @@ async def before_prompt_build(context_vars, session_ctx=None, current_message=No
     return context_vars
 
 # 导出供外部使用的核心模块
-__all__ = ["MemeStickerTool", "router"]
+__all__ = ["MemeStickerTool", "router", "load_tools"]
