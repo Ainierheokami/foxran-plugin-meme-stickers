@@ -8,7 +8,6 @@ from app.logger import setup_logger
 logger = setup_logger(__name__)
 
 # 注册 Hook：拦截并处理表情包发送
-@plugin_hooks.register("process_outbound_message_chain")
 async def process_outbound_message_chain(message_chain, session_ctx=None, **kwargs):
     from app.data_mappers.schemas import MessageSegments, MemeSchema
     if not isinstance(message_chain, MessageSegments):
@@ -35,7 +34,6 @@ async def process_outbound_message_chain(message_chain, session_ctx=None, **kwar
     return resolved_chain
 
 # 注册 Hook：注入 Prompt
-@plugin_hooks.register("before_prompt_build")
 async def before_prompt_build(context_vars, session_ctx=None, current_message=None, tool_manager=None, **kwargs):
     from .backend.tool import _load_library
     import time
@@ -134,5 +132,35 @@ async def before_prompt_build(context_vars, session_ctx=None, current_message=No
         
     return context_vars
 
+
+def _register_hooks() -> None:
+    """Register plugin callbacks idempotently."""
+    plugin_hooks.register("process_outbound_message_chain", process_outbound_message_chain)
+    plugin_hooks.register("before_prompt_build", before_prompt_build)
+
+
+async def startup() -> None:
+    """Initialize module resources after the plugin is loaded."""
+    logger.info("Meme sticker plugin started")
+
+
+async def enable() -> None:
+    """Expose plugin callbacks while the installed plugin is enabled."""
+    _register_hooks()
+    logger.info("Meme sticker plugin enabled")
+
+
+async def disable() -> None:
+    """Withdraw plugin callbacks without uninstalling plugin files."""
+    plugin_hooks.unregister("process_outbound_message_chain", process_outbound_message_chain)
+    plugin_hooks.unregister("before_prompt_build", before_prompt_build)
+    logger.info("Meme sticker plugin disabled")
+
+
+async def shutdown() -> None:
+    """Release runtime integrations before the plugin is hot-unloaded."""
+    await disable()
+    logger.info("Meme sticker plugin stopped")
+
 # 导出供外部使用的核心模块
-__all__ = ["MemeStickerTool", "router", "load_tools"]
+__all__ = ["MemeStickerTool", "router", "load_tools", "startup", "enable", "disable", "shutdown"]
