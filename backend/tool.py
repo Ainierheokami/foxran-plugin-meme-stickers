@@ -479,7 +479,9 @@ class MemeStickerTool(BaseTool):
             summary=str(selected.get("summary") or "表情包"),
         )
         if args.allow_send:
-            return str(meme)
+            send_url = str(selected.get("send_url") or selected.get("url") or "")
+            summary = str(selected.get("summary") or "")
+            return f"[image,url={send_url},summary={summary}]"
         tags = ", ".join(selected.get("tags") or [])
         return f"{selected['id']} | {selected.get('summary') or ''} | {selected.get('emotion') or ''} | {tags} | {selected['url']}"
 
