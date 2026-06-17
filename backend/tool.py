@@ -480,6 +480,9 @@ class MemeStickerTool(BaseTool):
         )
         if args.allow_send:
             send_url = str(selected.get("send_url") or selected.get("url") or "")
+            path, _ = resolve_sticker_storage_url(send_url)
+            if path and path.exists():
+                send_url = f"file:///{path.absolute().as_posix()}"
             summary = str(selected.get("summary") or "")
             return f"[image,url={send_url},summary={summary}]"
         tags = ", ".join(selected.get("tags") or [])
