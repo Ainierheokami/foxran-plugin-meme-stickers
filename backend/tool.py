@@ -167,8 +167,12 @@ def resolve_sticker_storage_url(url: str) -> tuple[Optional[Path], str]:
             if not filename:
                 return None, kind
             target = (root / filename).resolve()
-            if target.exists() and root.resolve() in target.parents:
-                return target, kind
+            try:
+                if target.exists() and target.is_relative_to(root.resolve()):
+                    return target, kind
+            except AttributeError:
+                if target.exists() and str(root.resolve()).lower() in str(target).lower():
+                    return target, kind
             return None, kind
     return None, ""
 
