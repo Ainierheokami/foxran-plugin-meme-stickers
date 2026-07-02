@@ -184,7 +184,12 @@
           </button>
 
           <button class="preview" @click="openSticker(item)">
-            <img :src="imageSrc(item)" :alt="item.summary || item.id" />
+            <img
+              :src="imageSrc(item)"
+              :alt="item.summary || item.id"
+              loading="lazy"
+              decoding="async"
+            />
           </button>
 
           <div class="min-w-0 flex-1 space-y-2">

@@ -7,14 +7,15 @@ import re
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from app.api.endpoints.auth import require_auth
 from app.logger import setup_logger
-from app.runtime.paths import STICKER_ASSETS_DIR
+from app.runtime.paths import STICKER_ASSETS_DIR, STICKERS_DIR
 from .tool import (
     build_sticker_asset_url,
     build_sticker_send_url,
@@ -30,6 +31,8 @@ from .tool import (
 
 logger = setup_logger(__name__)
 router = APIRouter()
+STICKER_THUMB_DIR = STICKERS_DIR / "thumbs"
+THUMBNAIL_SOURCE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 
 
 class StickerCreateRequest(BaseModel):
@@ -59,12 +62,81 @@ class StickerAutoTagRequest(BaseModel):
     overwrite: bool = Field(False, description="是否覆盖已有 summary/emotion/tags。默认只补空字段并合并标签。")
 
 
+def _build_sticker_thumb_url(url: str, size: int = 160) -> str:
+    path, kind = resolve_sticker_storage_url(url)
+    if not path or kind not in ("asset", "send"):
+        return ""
+    if path.suffix.lower() not in THUMBNAIL_SOURCE_EXTS:
+        return ""
+    route_kind = "assets" if kind == "asset" else "send"
+    return f"/api/stickers/thumb/{route_kind}/{quote(path.name)}?size={size}"
+
+
 def _decorate(item: Dict[str, Any]) -> Dict[str, Any]:
     decorated = dict(item)
     url = str(decorated.get("url") or "")
-    if url.startswith("/api/stickers/assets/") or url.startswith("/api/stickers/send/"):
-        decorated.setdefault("thumb_url", url)
+    thumb_url = _build_sticker_thumb_url(url)
+    if thumb_url:
+        decorated["thumb_url"] = thumb_url
     return decorated
+
+
+def _sticker_thumb_path(source_path: Path, size: int) -> Path:
+    stat = source_path.stat()
+    token = f"{source_path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}:{size}"
+    import hashlib
+    return STICKER_THUMB_DIR / f"{hashlib.sha1(token.encode('utf-8')).hexdigest()[:20]}_{size}.webp"
+
+
+def _make_sticker_thumb(source_path: Path, size: int) -> bytes:
+    try:
+        from PIL import Image, ImageSequence
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Pillow 未安装，无法生成缩略图") from e
+
+    try:
+        with Image.open(source_path) as img:
+            try:
+                resample = Image.Resampling.LANCZOS
+            except AttributeError:
+                resample = Image.LANCZOS
+
+            if getattr(img, "is_animated", False):
+                frames = []
+                durations = []
+                for frame in ImageSequence.Iterator(img):
+                    current = frame.convert("RGBA")
+                    current.thumbnail((size, size), resample)
+                    frames.append(current.copy())
+                    durations.append(int(frame.info.get("duration", 90)))
+                    if len(frames) >= 24:
+                        break
+                if not frames:
+                    raise ValueError("empty animated image")
+                buffer = BytesIO()
+                frames[0].save(
+                    buffer,
+                    format="WEBP",
+                    save_all=True,
+                    append_images=frames[1:],
+                    duration=durations,
+                    loop=0,
+                    quality=68,
+                    method=6,
+                )
+                return buffer.getvalue()
+
+            img.thumbnail((size, size), resample)
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGBA")
+            buffer = BytesIO()
+            img.save(buffer, format="WEBP", quality=68, method=6)
+            return buffer.getvalue()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"表情包缩略图生成失败 {source_path}: {e}")
+        raise HTTPException(status_code=500, detail="thumb_failed")
 
 
 def _upsert_sticker(
@@ -243,6 +315,32 @@ async def get_sticker_send_asset(filename: str):
     if not path:
         raise HTTPException(status_code=404, detail="表情包发送素材不存在")
     return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+
+
+@router.get("/api/stickers/thumb/{kind}/{filename:path}")
+async def get_sticker_thumb(kind: str, filename: str, size: int = Query(160, ge=32, le=512)):
+    if kind == "assets":
+        source_url = build_sticker_asset_url(filename)
+    elif kind == "send":
+        source_url = build_sticker_send_url(filename)
+    else:
+        raise HTTPException(status_code=404, detail="表情包素材不存在")
+
+    path, _kind = resolve_sticker_storage_url(source_url)
+    if not path:
+        raise HTTPException(status_code=404, detail="表情包素材不存在")
+
+    thumb_file = _sticker_thumb_path(path, size)
+    if thumb_file.exists():
+        return Response(content=thumb_file.read_bytes(), media_type="image/webp")
+
+    content = _make_sticker_thumb(path, size)
+    try:
+        STICKER_THUMB_DIR.mkdir(parents=True, exist_ok=True)
+        thumb_file.write_bytes(content)
+    except Exception as e:
+        logger.debug(f"写入表情包缩略图缓存失败 {thumb_file}: {e}")
+    return Response(content=content, media_type="image/webp")
 
 
 def _is_bad_auto_tag(suggestion: Dict[str, Any]) -> bool:
