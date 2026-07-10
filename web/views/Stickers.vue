@@ -41,17 +41,17 @@
       @drop.prevent="handleDrop"
       @paste="handlePaste"
     >
-      <div class="flex min-w-0 flex-1 items-center gap-3">
-        <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border bg-background">
+      <div class="upload-intro">
+        <div class="upload-icon">
           <UploadCloud class="h-5 w-5 text-primary" />
         </div>
-        <div class="min-w-0">
-          <div class="font-medium">拖入、粘贴图片或批量选择文件</div>
-          <div class="text-xs text-muted-foreground">支持 PNG、JPG、WebP、GIF；也可复制多行图片 URL 后粘贴导入</div>
+        <div class="upload-copy">
+          <div class="upload-title">拖入、粘贴图片或批量选择文件</div>
+          <div class="upload-help">支持 PNG、JPG、WebP、GIF；也可复制多行图片 URL 后粘贴导入</div>
         </div>
       </div>
 
-      <div class="grid w-full gap-2 md:w-auto md:grid-cols-[150px_150px_220px_auto]">
+      <div class="upload-fields">
         <input
           v-model="uploadMeta.emotion"
           class="field"
@@ -67,7 +67,7 @@
           class="field"
           placeholder="标签，逗号分隔"
         />
-        <label class="btn-primary h-9 cursor-pointer px-3">
+        <label class="btn-primary upload-picker">
           <ImagePlus class="h-4 w-4" />
           选择图片
           <input ref="fileInput" class="hidden" type="file" accept="image/*" multiple @change="handleFileInput" />
@@ -754,6 +754,74 @@ onMounted(fetchStickers)
 .upload-zone.is-dragging {
   border-color: hsl(var(--primary));
   background: hsl(var(--primary) / 0.05);
+}
+
+.upload-intro {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 18rem;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.upload-icon {
+  display: flex;
+  height: 2.75rem;
+  width: 2.75rem;
+  flex: 0 0 2.75rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.375rem;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--background));
+}
+
+.upload-copy {
+  min-width: 0;
+}
+
+.upload-title {
+  font-weight: 500;
+  line-height: 1.5rem;
+}
+
+.upload-help {
+  color: hsl(var(--muted-foreground));
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+
+.upload-fields {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.5rem;
+}
+
+.upload-picker {
+  height: 2.25rem;
+  cursor: pointer;
+  padding: 0 0.75rem;
+  white-space: nowrap;
+}
+
+@media (min-width: 640px) and (max-width: 1023px) {
+  .upload-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .upload-fields {
+    width: min(100%, 41rem);
+    flex: 0 1 41rem;
+    grid-template-columns:
+      minmax(7.5rem, 0.75fr)
+      minmax(7.5rem, 0.75fr)
+      minmax(10rem, 1.1fr)
+      max-content;
+  }
 }
 
 .bulk-form {
