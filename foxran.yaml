@@ -1,6 +1,10 @@
-plugin:
-  name: "meme_stickers"
+manifest_version: 1
+
+extension:
+  id: "meme_stickers"
+  name: "Meme Stickers"
   version: "1.0.0"
+  type: "tool"
   description: "A full-stack plugin providing a meme sticker library, AI injection logic, and frontend management GUI."
   author: "Ainierheokami"
   repository: "https://github.com/Ainierheokami/foxran-plugin-meme-stickers"
@@ -8,12 +12,11 @@ plugin:
     - "media"
     - "fun"
     - "webui"
-  
-  dependencies:
-    foxran: ">=1.0.0"
-    python: ">=3.10"
 
+compatibility:
+  foxran: ">=1.0.0"
+  python: ">=3.10"
+
+tool:
   entry: "__init__.py"
-  
-  tools:
-    - "MemeStickerTool"
+  frontend_bundle: "index.umd.js"

@@ -9,7 +9,7 @@
 
 或者手动通过命令行克隆并安装：
 ```bash
-python scripts/install_market_plugin.py https://github.com/Foxran/foxran-plugin-meme-stickers.git --type tool
+python scripts/install_market_plugin.py https://github.com/Ainierheokami/foxran-plugin-meme-stickers.git --type tool
 ```
 
 ## 📸 功能说明
