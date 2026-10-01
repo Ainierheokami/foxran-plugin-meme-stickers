@@ -1,6 +1,7 @@
 import asyncio
 import json
-from .backend.tool import MemeStickerTool, resolve_meme_schema, load_tools
+from .backend.segment import is_meme_segment, register_meme_segment, unregister_meme_segment
+from .backend.tool import MemeStickerTool, resolve_meme_segment, load_tools
 from .backend.api import router
 from app.utils.hooks import plugin_hooks
 from app.logger import setup_logger
@@ -9,19 +10,18 @@ logger = setup_logger(__name__)
 
 # 注册 Hook：拦截并处理表情包发送
 async def process_outbound_message_chain(message_chain, session_ctx=None, **kwargs):
-    from app.data_mappers.schemas import MessageSegments, MemeSchema
-    if not isinstance(message_chain, MessageSegments):
+    from app.message import MessageChain
+    if not isinstance(message_chain, MessageChain):
         return message_chain
 
-    has_meme = any(isinstance(seg, MemeSchema) for seg in message_chain)
-    if not has_meme:
+    if not any(is_meme_segment(seg) for seg in message_chain):
         return message_chain
 
-    resolved_chain = MessageSegments()
+    resolved_chain = MessageChain()
     for seg in message_chain:
-        if isinstance(seg, MemeSchema):
+        if is_meme_segment(seg):
             try:
-                image_seg = await asyncio.to_thread(resolve_meme_schema, seg, session_ctx)
+                image_seg = await asyncio.to_thread(resolve_meme_segment, seg, session_ctx)
             except Exception as e:
                 logger.warning(f"[表情包插件] 片段解析失败: {seg}, {e}")
                 image_seg = None
@@ -135,6 +135,7 @@ async def before_prompt_build(context_vars, session_ctx=None, current_message=No
 
 def _register_hooks() -> None:
     """Register plugin callbacks idempotently."""
+    register_meme_segment()
     plugin_hooks.register("process_outbound_message_chain", process_outbound_message_chain)
     plugin_hooks.register("before_prompt_build", before_prompt_build)
 
@@ -154,6 +155,7 @@ async def disable() -> None:
     """Withdraw plugin callbacks without uninstalling plugin files."""
     plugin_hooks.unregister("process_outbound_message_chain", process_outbound_message_chain)
     plugin_hooks.unregister("before_prompt_build", before_prompt_build)
+    unregister_meme_segment()
     logger.info("Meme sticker plugin disabled")
 
 

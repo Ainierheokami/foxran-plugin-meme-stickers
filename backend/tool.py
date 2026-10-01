@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from app.logger import setup_logger
 from app.runtime.paths import STICKER_ASSETS_DIR, STICKER_SEND_DIR, STICKERS_DIR
-from app.data_mappers.schemas import ImageSchema, MemeSchema
+from app.message import ExtensionSegment, Image, MediaRef
 from app.tools.base import BaseTool, ToolInputSchema, ToolResult
 from app.tools.registry import ToolRegistry
 
@@ -348,20 +348,21 @@ def _select_sticker(
     return selected
 
 
-def resolve_meme_schema(schema: MemeSchema, session_ctx: Any = None) -> Optional[ImageSchema]:
+def resolve_meme_segment(segment: ExtensionSegment, session_ctx: Any = None) -> Optional[Image]:
+    data = segment.data
     selected = _select_sticker(
-        sticker_id=schema.id or "",
-        query=schema.query or "",
-        emotion=schema.emotion or "",
-        tags=schema.tags,
-        summary=schema.summary or "",
+        sticker_id=data.get("id") or "",
+        query=data.get("query") or "",
+        emotion=data.get("emotion") or "",
+        tags=list(data.get("tags") or []),
+        summary=data.get("summary") or "",
         session_ctx=session_ctx,
     )
     if not selected:
         return None
-    return ImageSchema(
-        url=to_absolute_url(str(selected.get("send_url") or selected.get("url") or "")),
-        summary=str(schema.summary or selected.get("summary") or "表情包"),
+    return Image(
+        media=MediaRef(url=to_absolute_url(str(selected.get("send_url") or selected.get("url") or ""))),
+        summary=str(data.get("summary") or selected.get("summary") or "表情包"),
     )
 
 
@@ -486,13 +487,6 @@ class MemeStickerTool(BaseTool):
         if not selected:
             return "表情包库还是空的；可以先用 meme_sticker collect 收集一张合适的图片。"
 
-        selected_tags = ",".join(_normalize_tags(selected.get("tags") or []))
-        meme = MemeSchema(
-            id=str(selected.get("id") or ""),
-            emotion=str(selected.get("emotion") or ""),
-            tags=selected_tags,
-            summary=str(selected.get("summary") or "表情包"),
-        )
         if args.allow_send:
             send_url = to_absolute_url(str(selected.get("send_url") or selected.get("url") or ""))
             summary = str(selected.get("summary") or "")

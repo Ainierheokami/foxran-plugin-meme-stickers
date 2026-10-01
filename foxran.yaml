@@ -3,7 +3,7 @@ manifest_version: 1
 extension:
   id: "meme_stickers"
   name: "Meme Stickers"
-  version: "1.0.0"
+  version: "1.1.0"
   type: "tool"
   description: "A full-stack plugin providing a meme sticker library, AI injection logic, and frontend management GUI."
   author: "Ainierheokami"
