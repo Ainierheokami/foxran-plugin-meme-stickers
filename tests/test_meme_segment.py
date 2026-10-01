@@ -61,7 +61,9 @@ def test_meme_tag_round_trips_like_the_old_schema(registered, source, rendered):
     chain = tag_codec.parse(source)
 
     assert tag_codec.render(chain) == rendered
-    assert message_segments_to_parts(chain) == [{"type": "text", "text": rendered}]
+    # The WebUI shows extension segments through their registered fallback, not agent syntax.
+    expected_parts = [{"type": "text", "text": "[表情包]"}] if rendered != "[meme]" else [{"type": "text", "text": rendered}]
+    assert message_segments_to_parts(chain) == expected_parts
 
 
 def test_meme_tag_parses_to_namespaced_extension_segment(registered):

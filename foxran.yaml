@@ -3,7 +3,7 @@ manifest_version: 1
 extension:
   id: "meme_stickers"
   name: "Meme Stickers"
-  version: "1.1.0"
+  version: "1.1.1"
   type: "tool"
   description: "A full-stack plugin providing a meme sticker library, AI injection logic, and frontend management GUI."
   author: "Ainierheokami"
@@ -14,7 +14,7 @@ extension:
     - "webui"
 
 compatibility:
-  foxran: ">=2.0.0"
+  foxran: ">=2.0.0,<4.0.0"
   python: ">=3.10"
 
 tool:
