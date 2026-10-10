@@ -177,3 +177,17 @@ async def test_collect_select_delete(tmp_path, monkeypatch):
     deleted = await tool.execute(operation="delete", sticker_id=sticker_id)
     assert deleted.success, deleted
     assert f"已删除表情包 {sticker_id}" in deleted.data
+
+
+def test_only_sendable_select_results_are_shown_to_the_user():
+    from app.tools.plugins.meme_stickers.backend.tool import MemeStickerTool
+
+    tool = MemeStickerTool()
+    visibility = lambda **params: tool.get_execution_contract(params)["visibility"]
+
+    assert visibility(operation="select") == "user_visible"
+    assert visibility(operation="select", allow_send=True) == "user_visible"
+    assert visibility(operation="select", allow_send=False) == "agent_only"
+    assert visibility(operation="select", allow_send="false") == "agent_only"
+    for operation in ("list", "collect", "update", "delete"):
+        assert visibility(operation=operation) == "agent_only"

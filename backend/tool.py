@@ -394,9 +394,28 @@ class MemeStickerTool(BaseTool):
         "用于让 Agent 在轻松、庆祝、感谢、调侃、缓和尴尬等场景适度附上表情包。"
         "严肃求助、隐私话题、争执升级、用户明确不想要时不要使用；一次回复最多使用一张。"
         "收集图片前应确认它适合复用，不要收集私人照片、证件、聊天截图等敏感图片。"
+        "只有 select（allow_send=true）的结果会作为图片直接发给用户；list、collect、update、delete "
+        "以及 allow_send=false 的 select 结果只返回给你自己参考，不会展示给用户。"
     )
     manual_tags: List[str] = ["sticker", "meme", "表情包", "拟人感", "聊天", "onebot", "qq"]
     args_schema: Type[BaseModel] = StickerPackInput
+
+    def get_execution_contract(self, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Only a sendable ``select`` result is shown to the user.
+
+        ``list``/``collect``/``update``/``delete`` and ``select`` with
+        ``allow_send=false`` return library details for the agent to read, not
+        a message for the chat.
+        """
+        contract = super().get_execution_contract(parameters)
+        params = parameters or {}
+        operation = str(params.get("operation") or "").strip().lower()
+        allow_send = params.get("allow_send", True)
+        if isinstance(allow_send, str):
+            allow_send = allow_send.strip().lower() not in {"false", "0", "no", ""}
+        sends_sticker = operation == "select" and bool(allow_send)
+        contract["visibility"] = "user_visible" if sends_sticker else "agent_only"
+        return contract
 
     async def execute(self, session_ctx: Any = None, status_callback: Any = None, **kwargs: Any) -> ToolResult:
         try:
