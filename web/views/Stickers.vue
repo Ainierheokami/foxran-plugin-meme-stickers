@@ -3,7 +3,7 @@
     <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
       <div>
         <h2 class="text-2xl font-semibold tracking-tight">表情包池</h2>
-        <p class="text-sm text-muted-foreground">上传、打标和维护 Agent 可用于聊天的表情素材</p>
+        <p class="text-sm text-muted-foreground">上传、生成、打标和维护 Agent 可用于聊天的表情素材</p>
       </div>
 
       <div class="flex flex-wrap items-center gap-2">
@@ -23,6 +23,10 @@
         <select v-model="filters.emotion" class="h-9 rounded-md border border-input bg-background px-3 text-sm shadow-sm outline-none focus:ring-1 focus:ring-ring">
           <option value="">全部情绪</option>
           <option v-for="emotion in availableEmotions" :key="emotion" :value="emotion">{{ emotion }}</option>
+        </select>
+        <select v-model="filters.source" class="h-9 rounded-md border border-input bg-background px-3 text-sm shadow-sm outline-none focus:ring-1 focus:ring-ring" @change="fetchStickers">
+          <option value="">全部来源</option>
+          <option v-for="source in sourceOptions" :key="source" :value="source">{{ sourceLabel(source) }}</option>
         </select>
         <button class="btn-secondary h-9 px-3" :disabled="loading" @click="fetchStickers">
           <RefreshCcw class="h-4 w-4" :class="{ 'animate-spin': loading }" />
@@ -72,6 +76,64 @@
           选择图片
           <input ref="fileInput" class="hidden" type="file" accept="image/*" multiple @change="handleFileInput" />
         </label>
+      </div>
+    </section>
+
+    <section ref="generatorEl" class="generator">
+      <div class="generator-head">
+        <div class="flex items-center gap-2 font-medium">
+          <Wand class="h-4 w-4 text-primary" />
+          AI 生成表情包
+        </div>
+        <div class="generator-modes" role="tablist">
+          <button
+            v-for="mode in drawModes"
+            :key="mode.value"
+            role="tab"
+            :aria-selected="drawForm.mode === mode.value"
+            :class="{ active: drawForm.mode === mode.value }"
+            @click="drawForm.mode = mode.value"
+          >
+            <component :is="mode.icon" class="h-4 w-4" />
+            {{ mode.label }}
+          </button>
+        </div>
+        <div class="generator-status" :class="{ warn: !modeAvailable }">
+          {{ statusText }}
+        </div>
+      </div>
+
+      <div class="generator-body">
+        <div v-if="drawForm.mode === 'remake'" class="reference">
+          <div v-if="drawForm.reference" class="reference-card">
+            <img :src="imageSrc(drawForm.reference)" :alt="drawForm.reference.summary || drawForm.reference.id" />
+            <div class="min-w-0 flex-1">
+              <div class="text-xs text-muted-foreground">参考表情包</div>
+              <div class="truncate text-sm font-medium">{{ drawForm.reference.summary || drawForm.reference.id }}</div>
+            </div>
+            <button class="icon-btn" title="换一张参考图" @click="drawForm.reference = null">
+              <X class="h-4 w-4" />
+            </button>
+          </div>
+          <input v-else v-model="drawForm.referenceUrl" class="field" placeholder="参考图 URL；或在下方表情包卡片上点“复刻”" />
+        </div>
+
+        <textarea
+          v-model="drawForm.prompt"
+          class="generator-prompt"
+          :placeholder="drawForm.mode === 'generate'
+            ? '画面描述：角色、动作、表情，例如“一只叉腰得意的橘色狐狸，眯眼坏笑”'
+            : '修改要求，可留空表示原样复刻，例如“换成一只白色小猫，保留动作”'"
+        />
+        <div class="generator-fields">
+          <input v-model="drawForm.caption" class="field" placeholder="配字（可选，2~8 字）" />
+          <input v-model="drawForm.emotion" class="field" placeholder="情绪，如 happy" />
+          <input v-model="drawForm.tags" class="field" placeholder="标签，逗号分隔" />
+          <button class="btn-primary h-9 px-4" :disabled="!canDraw" @click="drawSticker">
+            <Wand class="h-4 w-4" />
+            {{ drawForm.mode === 'generate' ? '生成' : '复刻' }}
+          </button>
+        </div>
       </div>
     </section>
 
@@ -176,7 +238,7 @@
           v-for="item in items"
           :key="item.id"
           class="sticker-row"
-          :class="{ selected: selectedIds.has(item.id), disabled: !item.enabled }"
+          :class="{ selected: selectedIds.has(item.id), disabled: !item.enabled, fresh: item.id === freshId }"
         >
           <button class="select-box" :aria-label="`选择 ${item.id}`" @click="toggleSelection(item.id)">
             <CheckSquare v-if="selectedIds.has(item.id)" class="h-4 w-4" />
@@ -210,6 +272,7 @@
 
             <div class="sticker-footer">
               <div class="flex flex-wrap gap-1">
+                <span v-if="item.source" class="chip source" :class="`source-${item.source}`">{{ sourceLabel(item.source) }}</span>
                 <span v-if="item.emotion" class="chip">{{ item.emotion }}</span>
                 <span v-for="tag in item.tags" :key="`${item.id}-${tag}`" class="chip muted">{{ tag }}</span>
               </div>
@@ -217,6 +280,9 @@
                 <button class="icon-btn" :title="item.enabled ? '停用' : '启用'" @click="toggleEnabled(item)">
                   <Eye v-if="item.enabled" class="h-4 w-4" />
                   <EyeOff v-else class="h-4 w-4" />
+                </button>
+                <button class="icon-btn" title="复刻这张" @click="startRemake(item)">
+                  <Copy class="h-4 w-4" />
                 </button>
                 <button class="icon-btn" title="打开图片" @click="openSticker(item)">
                   <ExternalLink class="h-4 w-4" />
@@ -233,15 +299,24 @@
 
     <Teleport to="body">
       <Transition name="fade">
-        <div v-if="autoTagging" class="tagging-overlay">
+        <div v-if="autoTagging || drawing" class="tagging-overlay">
           <div class="tagging-panel">
             <div class="tagging-spinner">
-              <Sparkles class="h-6 w-6" />
+              <Wand v-if="drawing" class="h-6 w-6" />
+              <Sparkles v-else class="h-6 w-6" />
             </div>
-            <div class="text-lg font-semibold">正在进行视觉打标</div>
-            <div class="max-w-sm text-center text-sm text-muted-foreground">
-              视觉模型正在逐张分析 {{ selectedIds.size }} 个表情包，生成 summary、emotion 和 tags。图片多时会稍慢一些。
-            </div>
+            <template v-if="drawing">
+              <div class="text-lg font-semibold">{{ drawForm.mode === 'generate' ? '正在生成表情包' : '正在复刻表情包' }}</div>
+              <div class="max-w-sm text-center text-sm text-muted-foreground">
+                绘图模型正在作画，通常需要几十秒；画好后会自动存进表情包池。
+              </div>
+            </template>
+            <template v-else>
+              <div class="text-lg font-semibold">正在进行视觉打标</div>
+              <div class="max-w-sm text-center text-sm text-muted-foreground">
+                视觉模型正在逐张分析 {{ selectedIds.size }} 个表情包，生成 summary、emotion 和 tags。图片多时会稍慢一些。
+              </div>
+            </template>
             <div class="tagging-progress">
               <span />
             </div>
@@ -253,10 +328,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import {
   CheckSquare,
   ClipboardPaste,
+  Copy,
   ExternalLink,
   Eye,
   EyeOff,
@@ -270,9 +346,23 @@ import {
   Tags,
   Trash2,
   UploadCloud,
+  Wand,
   X,
 } from 'lucide-vue-next'
-import { autoTagStickers, bulkTagStickers, createSticker, deleteSticker, listStickers, updateSticker, uploadStickers, type StickerItem } from '../services/stickers'
+import {
+  autoTagStickers,
+  bulkTagStickers,
+  createSticker,
+  deleteSticker,
+  generateSticker,
+  getGenerationStatus,
+  listStickers,
+  remakeSticker,
+  updateSticker,
+  uploadStickers,
+  type GenerationStatus,
+  type StickerItem,
+} from '../services/stickers'
 import { getApiOrigin } from '../services/api'
 const toast = {
   success: (msg: string) => { console.log(msg); alert(msg) },
@@ -307,6 +397,71 @@ const filters = reactive({
   q: '',
   tag: '',
   emotion: '',
+  source: '',
+})
+
+const SOURCE_LABELS: Record<string, string> = {
+  upload: '上传',
+  url: 'URL 导入',
+  collected: 'Agent 收集',
+  generated: 'AI 生成',
+  remade: 'AI 复刻',
+}
+const availableSources = ref<string[]>([])
+const sourceOptions = computed(() => [...new Set([...Object.keys(SOURCE_LABELS), ...availableSources.value])])
+
+function sourceLabel(source: string) {
+  return SOURCE_LABELS[source] || source
+}
+
+type DrawMode = 'generate' | 'remake'
+const drawModes: Array<{ value: DrawMode; label: string; icon: any }> = [
+  { value: 'generate', label: '生成', icon: Wand },
+  { value: 'remake', label: '复刻', icon: Copy },
+]
+const drawForm = reactive({
+  mode: 'generate' as DrawMode,
+  prompt: '',
+  caption: '',
+  emotion: '',
+  tags: '',
+  reference: null as StickerItem | null,
+  referenceUrl: '',
+})
+const generationStatus = ref<GenerationStatus | null>(null)
+const drawing = ref(false)
+const freshId = ref('')
+const generatorEl = ref<HTMLElement | null>(null)
+
+const quotaLeft = computed(() => {
+  const status = generationStatus.value
+  if (!status || !status.max_per_day) return Infinity
+  return Math.max(0, status.max_per_day - status.used_today)
+})
+
+const modeAvailable = computed(() => {
+  const status = generationStatus.value
+  if (!status) return false
+  return drawForm.mode === 'generate' ? status.can_generate : status.can_remake
+})
+
+const statusText = computed(() => {
+  const status = generationStatus.value
+  if (!status) return '正在检查绘图模型...'
+  if (!status.enabled) return '已在 meme_sticker.yaml 中关闭生成'
+  if (!modeAvailable.value) {
+    return drawForm.mode === 'generate'
+      ? '没有可用的 image_generation 模型'
+      : '没有可用的 image_edit 模型'
+  }
+  const quota = status.max_per_day ? `今日 ${status.used_today}/${status.max_per_day}` : `今日已生成 ${status.used_today}`
+  return `${quota} · ${status.size}`
+})
+
+const canDraw = computed(() => {
+  if (drawing.value || !modeAvailable.value || quotaLeft.value <= 0) return false
+  if (drawForm.mode === 'generate') return !!drawForm.prompt.trim()
+  return !!(drawForm.reference || drawForm.referenceUrl.trim())
 })
 
 const uploadMeta = reactive({
@@ -405,6 +560,7 @@ async function fetchStickers() {
     items.value = data.items || []
     availableTags.value = data.tags || []
     availableEmotions.value = data.emotions || []
+    availableSources.value = data.sources || []
     items.value.forEach(syncDraft)
     const visibleIds = new Set(items.value.map((item) => item.id))
     selectedIds.value = new Set([...selectedIds.value].filter((id) => visibleIds.has(id)))
@@ -412,6 +568,51 @@ async function fetchStickers() {
     showError('加载表情包失败')
   } finally {
     loading.value = false
+  }
+}
+
+async function fetchGenerationStatus() {
+  try {
+    generationStatus.value = await getGenerationStatus()
+  } catch (e) {
+    generationStatus.value = null
+  }
+}
+
+function startRemake(item: StickerItem) {
+  drawForm.mode = 'remake'
+  drawForm.reference = item
+  drawForm.referenceUrl = ''
+  if (!drawForm.emotion) drawForm.emotion = item.emotion || ''
+  nextTick(() => generatorEl.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+}
+
+async function drawSticker() {
+  if (!canDraw.value) return
+  drawing.value = true
+  const mode = drawForm.mode
+  const payload = {
+    prompt: drawForm.prompt.trim(),
+    caption: drawForm.caption.trim(),
+    emotion: drawForm.emotion.trim(),
+    tags: parseTags(drawForm.tags),
+  }
+  try {
+    const item = mode === 'generate'
+      ? await generateSticker(payload)
+      : await remakeSticker(
+        drawForm.reference ? { id: drawForm.reference.id } : { url: drawForm.referenceUrl.trim() },
+        payload,
+      )
+    freshId.value = item.id
+    drawForm.prompt = ''
+    drawForm.caption = ''
+    await Promise.all([fetchStickers(), fetchGenerationStatus()])
+    showNotice(mode === 'generate' ? '已生成表情包并存入池子' : '已复刻表情包并存入池子')
+  } catch (e: any) {
+    showError(e?.response?.data?.detail || (mode === 'generate' ? '生成失败' : '复刻失败'))
+  } finally {
+    drawing.value = false
   }
 }
 
@@ -619,7 +820,10 @@ async function removeSticker(item: StickerItem) {
   }
 }
 
-onMounted(fetchStickers)
+onMounted(() => {
+  fetchStickers()
+  fetchGenerationStatus()
+})
 </script>
 
 <style scoped>
@@ -824,6 +1028,114 @@ onMounted(fetchStickers)
   }
 }
 
+.generator {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  border-radius: 0.375rem;
+  border: 1px solid hsl(var(--border));
+  background: linear-gradient(135deg, hsl(var(--primary) / 0.06), transparent 60%), hsl(var(--card));
+  padding: 1rem;
+}
+
+.generator-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.generator-modes {
+  display: inline-flex;
+  border-radius: 0.375rem;
+  border: 1px solid hsl(var(--input));
+  background: hsl(var(--background));
+  padding: 0.125rem;
+}
+
+.generator-modes button {
+  display: inline-flex;
+  height: 1.75rem;
+  align-items: center;
+  gap: 0.375rem;
+  border-radius: 0.25rem;
+  padding: 0 0.75rem;
+  font-size: 0.8125rem;
+  color: hsl(var(--muted-foreground));
+}
+
+.generator-modes button.active {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+
+.generator-status {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: hsl(var(--muted-foreground));
+}
+
+.generator-status.warn {
+  color: hsl(var(--destructive));
+}
+
+.generator-body {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.generator-prompt {
+  min-height: 4.5rem;
+  width: 100%;
+  resize: vertical;
+  border-radius: 0.375rem;
+  border: 1px solid hsl(var(--input));
+  background: hsl(var(--background));
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  outline: none;
+}
+
+.generator-prompt:focus {
+  box-shadow: 0 0 0 1px hsl(var(--ring));
+}
+
+.generator-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr) minmax(0, 1.2fr) auto;
+  gap: 0.5rem;
+}
+
+@media (max-width: 760px) {
+  .generator-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .generator-status {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+
+.reference-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  border-radius: 0.375rem;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--background));
+  padding: 0.5rem;
+}
+
+.reference-card img {
+  height: 3.5rem;
+  width: 3.5rem;
+  flex: 0 0 3.5rem;
+  border-radius: 0.25rem;
+  object-fit: cover;
+  background: hsl(var(--muted));
+}
+
 .bulk-form {
   display: grid;
   grid-template-columns: minmax(0, 8.75rem) minmax(0, 14rem) minmax(0, 7.5rem) auto auto auto;
@@ -877,6 +1189,11 @@ onMounted(fetchStickers)
 
 .sticker-row.disabled {
   opacity: 0.6;
+}
+
+.sticker-row.fresh {
+  border-color: hsl(var(--primary));
+  box-shadow: 0 0 0 2px hsl(var(--primary) / 0.25);
 }
 
 .select-box {
@@ -976,6 +1293,25 @@ onMounted(fetchStickers)
   padding: 0 0.5rem;
   font-size: 0.75rem;
   color: hsl(var(--primary));
+}
+
+.chip.source {
+  border-color: hsl(var(--border));
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+.chip.source-generated,
+.chip.source-remade {
+  border-color: rgb(139 92 246 / 0.35);
+  background: rgb(139 92 246 / 0.1);
+  color: rgb(124 58 237);
+}
+
+.chip.source-collected {
+  border-color: rgb(16 185 129 / 0.35);
+  background: rgb(16 185 129 / 0.1);
+  color: rgb(5 150 105);
 }
 
 .chip.muted {

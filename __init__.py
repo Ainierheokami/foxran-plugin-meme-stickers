@@ -1,5 +1,4 @@
 import asyncio
-import json
 from .backend.segment import is_meme_segment, register_meme_segment, unregister_meme_segment
 from .backend.tool import MemeStickerTool, resolve_meme_segment, load_tools
 from .backend.api import router
@@ -35,28 +34,29 @@ async def process_outbound_message_chain(message_chain, session_ctx=None, **kwar
 
 # 注册 Hook：注入 Prompt
 async def before_prompt_build(context_vars, session_ctx=None, current_message=None, tool_manager=None, **kwargs):
-    from .backend.tool import _load_library
-    import time
-    
+    from .backend import generation, prompt
+
     if not current_message or current_message.role != "user":
         return context_vars
-    if session_ctx.is_subagent:
+    if session_ctx is None or session_ctx.is_subagent:
         return context_vars
-    if not tool_manager or not tool_manager.get_tool("meme_sticker"):
+    tool_instance = tool_manager.get_tool("meme_sticker") if tool_manager else None
+    if not tool_instance:
         return context_vars
 
     try:
         from app.config import load_meme_sticker_config
-        meme_cfg = load_meme_sticker_config().prompt
+        meme_cfg = load_meme_sticker_config()
     except Exception as e:
         logger.debug(f"[表情包插件] 读取配置失败: {e}")
         return context_vars
 
-    if not meme_cfg.enabled:
+    prompt_cfg = meme_cfg.prompt
+    if not prompt_cfg.enabled:
         return context_vars
 
     platform = (session_ctx.platform or "").lower()
-    allowed_platforms = [str(item).lower() for item in meme_cfg.allowed_platforms or []]
+    allowed_platforms = [str(item).lower() for item in prompt_cfg.allowed_platforms or []]
     if allowed_platforms and not any(item in platform for item in allowed_platforms):
         return context_vars
 
@@ -65,71 +65,28 @@ async def before_prompt_build(context_vars, session_ctx=None, current_message=No
         return context_vars
 
     try:
-        stickers = [
-            item for item in _load_library().get("stickers", [])
-            if item.get("enabled", True) and item.get("url")
-        ]
-    except Exception:
-        return context_vars
-    if not stickers:
+        summary = prompt.library_summary()
+    except Exception as e:
+        logger.debug(f"[表情包插件] 读取表情包库失败: {e}")
         return context_vars
 
-    now = time.time()
-    cooldown_seconds = max(0, int(meme_cfg.cooldown_seconds or 0))
-    if now - float(state.get("last_sticker_at") or 0) < cooldown_seconds:
+    generation_cfg = getattr(meme_cfg, "generation", None)
+    can_draw = bool(generation_cfg and generation_cfg.hint_enabled) and generation.generation_available()
+    hints, needs_tool = prompt.build_hints(
+        prompt_cfg=prompt_cfg,
+        collection_cfg=getattr(meme_cfg, "collection", None),
+        state=state,
+        text=str(current_message.content or ""),
+        summary=summary,
+        can_draw=can_draw,
+    )
+    if not hints:
         return context_vars
 
-    text = str(current_message.content or "").lower()
-    blocked_keywords = [str(keyword).lower() for keyword in meme_cfg.blocked_keywords or []]
-    if any(keyword and keyword in text for keyword in blocked_keywords):
-        state["prompt_active"] = False
-        state["prompt_turns"] = 0
-        return context_vars
-
-    prompt_active = bool(state.get("prompt_active")) and bool(meme_cfg.persist_until_sent)
-    if prompt_active:
-        prompt_turns = int(state.get("prompt_turns") or 0)
-        max_persistent_turns = max(0, int(meme_cfg.max_persistent_turns or 0))
-        if max_persistent_turns and prompt_turns >= max_persistent_turns:
-            state["prompt_active"] = False
-            state["prompt_turns"] = 0
-            state["turns_since_sticker"] = 0
-            return context_vars
-    else:
-        turns = int(state.get("turns_since_sticker") or 0) + 1
-        state["turns_since_sticker"] = turns
-        min_messages = max(1, int(meme_cfg.min_messages_between_prompts or 1))
-        if turns < min_messages:
-            return context_vars
-
-    tool_instance = tool_manager.get_tool("meme_sticker")
-    schema = tool_instance.get_input_schema_for_llm()
-    tool_block = f"""
-- meme_sticker:
-  功能说明: {tool_instance.description}
-  参数定义 (JSON): {json.dumps(schema, ensure_ascii=False)}
-"""
-    light_prompt = """
-[表情包机会提示]
-本轮对话气氛允许使用表情包。你可以在自然回复后，酌情追加 1 个 `[meme, emotion=..., tags=...]` 片段增强语气；系统会自动从表情包库选图发送，不要手写图片 URL。
-使用边界：
-- 只在轻松、感谢、庆祝、调侃、安慰、缓和尴尬、表达赞同等场景使用。
-- 严肃求助、隐私话题、争执、用户不耐烦、密集技术排障、医疗/法律/金融风险话题不要使用。
-- 一次回复最多 1 张；如果文字表达已经足够自然，可以不使用。
-- 推荐格式：`[meme, emotion=thanks, tags=感谢,捧场]` 或 `[meme, query=当前语境和想表达的语气]`。
-- emotion 可用 happy、thanks、agree、tease、awkward、surprised、comfort、sorry、confused。
-"""
-    combined = f"{context_vars.get('recommended_tools', '')}\n{tool_block}{light_prompt}"
+    if needs_tool:
+        hints.insert(0, prompt.tool_block(tool_instance))
+    combined = f"{context_vars.get('recommended_tools', '')}\n" + "\n".join(hints)
     context_vars["recommended_tools"] = combined.strip()
-    state["last_prompt_at"] = now
-    if meme_cfg.persist_until_sent:
-        state["prompt_active"] = True
-        state["prompt_turns"] = int(state.get("prompt_turns") or 0) + 1
-    else:
-        state["prompt_active"] = False
-        state["prompt_turns"] = 0
-        state["turns_since_sticker"] = 0
-        
     return context_vars
 
 

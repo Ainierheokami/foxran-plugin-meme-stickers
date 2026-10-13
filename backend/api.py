@@ -16,7 +16,9 @@ from pydantic import BaseModel, Field
 from app.api.endpoints.auth import require_auth
 from app.logger import setup_logger
 from app.runtime.paths import STICKER_ASSETS_DIR, STICKERS_DIR
+from . import generation
 from .tool import (
+    create_drawn_sticker,
     build_sticker_asset_url,
     build_sticker_send_url,
     persist_sticker_source,
@@ -55,6 +57,18 @@ class StickerBulkTagRequest(BaseModel):
     tags: List[str] = Field(default_factory=list)
     emotion: str = ""
     mode: str = Field("merge", description="merge 覆盖追加标签；replace 替换标签。")
+
+
+class StickerGenerateRequest(BaseModel):
+    prompt: str = ""
+    caption: str = ""
+    summary: str = ""
+    emotion: str = ""
+    tags: List[str] = Field(default_factory=list)
+
+
+class StickerRemakeRequest(StickerGenerateRequest):
+    url: str = Field("", description="参考图 URL；通过 /api/stickers/{id}/remake 调用时可留空，使用该表情包本身。")
 
 
 class StickerAutoTagRequest(BaseModel):
@@ -357,6 +371,7 @@ async def list_stickers(
     q: str = "",
     tag: str = "",
     emotion: str = "",
+    source: str = "",
     limit: int = 200,
     _: bool = Depends(require_auth),
 ):
@@ -365,8 +380,9 @@ async def list_stickers(
     q_lower = q.strip().lower()
     tag_lower = tag.strip().lower()
     emotion_lower = emotion.strip().lower()
+    source_lower = source.strip().lower()
 
-    if q_lower or tag_lower or emotion_lower:
+    if q_lower or tag_lower or emotion_lower or source_lower:
         filtered = []
         for item in items:
             item_tags = _normalize_tags(item.get("tags") or [])
@@ -383,6 +399,8 @@ async def list_stickers(
                 continue
             if emotion_lower and emotion_lower != str(item.get("emotion") or "").lower():
                 continue
+            if source_lower and source_lower != str(item.get("source") or "").lower():
+                continue
             filtered.append(item)
         items = filtered
 
@@ -390,12 +408,88 @@ async def list_stickers(
     capped = items[: max(1, min(limit, 500))]
     tags = sorted({tag for item in library["stickers"] for tag in _normalize_tags(item.get("tags") or [])})
     emotions = sorted({str(item.get("emotion") or "").lower() for item in library["stickers"] if item.get("emotion")})
+    sources = sorted({str(item.get("source") or "").lower() for item in library["stickers"] if item.get("source")})
     return {
         "total": len(items),
         "items": [_decorate(item) for item in capped],
         "tags": tags,
         "emotions": emotions,
+        "sources": sources,
     }
+
+
+@router.get("/api/stickers/generation/status")
+async def get_generation_status(_: bool = Depends(require_auth)):
+    """What the WebUI generator can do right now: config switch, models and today's quota."""
+    cfg = generation.load_generation_config()
+    enabled = bool(cfg is not None and cfg.enabled)
+    return {
+        "enabled": enabled,
+        "can_generate": enabled and generation.model_available("image_generation"),
+        "can_remake": enabled and generation.model_available("image_edit"),
+        "used_today": generation.generated_today(_load_library()["stickers"]),
+        "max_per_day": int(getattr(cfg, "max_per_day", 0) or 0),
+        "size": str(getattr(cfg, "size", "") or ""),
+    }
+
+
+@router.post("/api/stickers/generate")
+async def generate_sticker(payload: StickerGenerateRequest, _: bool = Depends(require_auth)):
+    try:
+        item = await create_drawn_sticker(
+            remake=False,
+            prompt=payload.prompt,
+            caption=payload.caption,
+            summary=payload.summary,
+            emotion=payload.emotion,
+            tags=payload.tags,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.warning(f"表情包生成失败: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"绘图模型调用失败: {e}")
+    return {"item": _decorate(item)}
+
+
+@router.post("/api/stickers/remake")
+async def remake_sticker_from_url(payload: StickerRemakeRequest, _: bool = Depends(require_auth)):
+    return await _remake(payload, reference_url=payload.url.strip())
+
+
+@router.post("/api/stickers/{sticker_id}/remake")
+async def remake_sticker(sticker_id: str, payload: StickerRemakeRequest, _: bool = Depends(require_auth)):
+    reference = next((item for item in _load_library()["stickers"] if item.get("id") == sticker_id), None)
+    if reference is None:
+        raise HTTPException(status_code=404, detail="表情包不存在")
+    return await _remake(payload, reference_url=str(reference.get("url") or ""), reference=reference)
+
+
+async def _remake(
+    payload: StickerRemakeRequest,
+    *,
+    reference_url: str,
+    reference: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    reference = reference or {}
+    try:
+        item = await create_drawn_sticker(
+            remake=True,
+            reference_url=reference_url,
+            reference_summary=str(reference.get("summary") or ""),
+            prompt=payload.prompt,
+            caption=payload.caption,
+            summary=payload.summary,
+            emotion=payload.emotion or str(reference.get("emotion") or ""),
+            tags=payload.tags or list(reference.get("tags") or []),
+            extra={"reference_id": reference["id"]} if reference.get("id") else None,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.warning(f"表情包复刻失败: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"绘图模型调用失败: {e}")
+    return {"item": _decorate(item)}
 
 
 @router.post("/api/stickers")

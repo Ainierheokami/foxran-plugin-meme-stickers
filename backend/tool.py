@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import mimetypes
@@ -25,7 +26,10 @@ logger = setup_logger(__name__)
 LIBRARY_PATH = STICKERS_DIR / "sticker_library.json"
 ASSET_URL_PREFIX = "/api/stickers/assets"
 SEND_URL_PREFIX = "/api/stickers/send"
-IMAGE_TAG_RE = re.compile(r"\[image,\s*url=(?P<url>[^\],\s]+)(?:[^\]]*?summary=(?P<summary>[^\]]+))?\]")
+# Same shape as the host tag codec: ``summary=[动画表情]`` keeps its brackets.
+IMAGE_TAG_RE = re.compile(
+    r"\[image,\s*url=(?P<url>[^,\]\s]+?)(?:\s*,\s*summary=(?P<summary>\[[^\]]*\]|[^\]]+?))?\s*\]"
+)
 SEND_WEBP_MAX_SIZE = 384
 SEND_WEBP_QUALITY = 72
 MAX_STICKER_BYTES = 15 * 1024 * 1024
@@ -138,8 +142,18 @@ def _read_sticker_source(url: str) -> tuple[bytes, str, str]:
 
 def persist_sticker_source(url: str, sticker_id: str = "") -> Dict[str, Any]:
     content, content_type, original_filename = _read_sticker_source(url)
+    return persist_sticker_bytes(content, content_type, original_filename, sticker_id=sticker_id)
+
+
+def persist_sticker_bytes(
+    content: bytes,
+    content_type: str,
+    original_filename: str = "",
+    sticker_id: str = "",
+) -> Dict[str, Any]:
+    content_sha1 = hashlib.sha1(content).hexdigest()
     if not sticker_id:
-        sticker_id = hashlib.sha1(content).hexdigest()[:12]
+        sticker_id = content_sha1[:12]
     ext = _ext_from_content_type(content_type, original_filename)
     filename = f"{sticker_id}{ext}"
     STICKER_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
@@ -152,6 +166,7 @@ def persist_sticker_source(url: str, sticker_id: str = "") -> Dict[str, Any]:
         "content_type": (content_type or "").split(";", 1)[0].strip().lower() or "application/octet-stream",
         "size": len(content),
         "original_filename": original_filename,
+        "content_sha1": content_sha1,
     }
 
 
@@ -270,16 +285,22 @@ def _get_send_url(item: Dict[str, Any]) -> str:
     return send_url
 
 
+def find_image_tags(text: str) -> List[Dict[str, str]]:
+    """``[image,url=..., summary=...]`` references in agent tag text, in order."""
+    return [
+        {"url": match.group("url") or "", "summary": (match.group("summary") or "").strip()}
+        for match in IMAGE_TAG_RE.finditer(text or "")
+        if match.group("url")
+    ]
+
+
 def _extract_recent_image(session_ctx: Any) -> Optional[Dict[str, str]]:
     history = getattr(session_ctx, "history", []) or []
     for msg in reversed(history[-12:]):
         content = str(getattr(msg, "content", "") or getattr(msg, "raw_content", "") or "")
-        match = IMAGE_TAG_RE.search(content)
-        if match:
-            return {
-                "url": match.group("url") or "",
-                "summary": (match.group("summary") or "").strip(),
-            }
+        images = find_image_tags(content)
+        if images:
+            return images[-1]
     return None
 
 
@@ -336,16 +357,20 @@ def _select_sticker(
     selected["last_used_at"] = _now()
     selected["send_url"] = _get_send_url(selected)
     _save_library(library)
-
-    if session_ctx is not None:
-        state = getattr(session_ctx, "session_notes", {}).setdefault("meme_sticker_state", {})
-        state["turns_since_sticker"] = 0
-        state["prompt_active"] = False
-        state["prompt_turns"] = 0
-        state["last_sticker_at"] = datetime.now().timestamp()
-        state["next_after"] = 0
-
+    mark_sticker_sent(session_ctx)
     return selected
+
+
+def mark_sticker_sent(session_ctx: Any) -> None:
+    """Reset the prompt hook's pacing after a sticker goes out."""
+    if session_ctx is None:
+        return
+    state = getattr(session_ctx, "session_notes", {}).setdefault("meme_sticker_state", {})
+    state["turns_since_sticker"] = 0
+    state["prompt_active"] = False
+    state["prompt_turns"] = 0
+    state["last_sticker_at"] = datetime.now().timestamp()
+    state["next_after"] = 0
 
 
 def resolve_meme_segment(segment: ExtensionSegment, session_ctx: Any = None) -> Optional[Image]:
@@ -366,44 +391,232 @@ def resolve_meme_segment(segment: ExtensionSegment, session_ctx: Any = None) -> 
     )
 
 
+def _store_sticker(
+    content: bytes,
+    content_type: str,
+    original_filename: str,
+    *,
+    source_url: str,
+    summary: str,
+    emotion: str,
+    tags: List[str],
+    source: str,
+    session_ctx: Any = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> tuple[Dict[str, Any], bool]:
+    """Add image bytes to the library, merging into an existing copy of the same image.
+
+    QQ hands out a fresh URL every time a sticker is sent, so duplicates are
+    found by content hash first and only then by the legacy URL-derived id.
+    Returns ``(item, created)``.
+    """
+    if len(content) > MAX_STICKER_BYTES:
+        raise ValueError("表情包文件过大")
+    content_sha1 = hashlib.sha1(content).hexdigest()
+    legacy_id = _make_id(source_url) if source_url else ""
+    library = _load_library()
+    stickers = library["stickers"]
+    existing = next(
+        (
+            item for item in stickers
+            if item.get("content_sha1") == content_sha1
+            or (legacy_id and item.get("id") == legacy_id)
+        ),
+        None,
+    )
+    clean_tags = _normalize_tags(tags)
+    clean_emotion = (emotion or "").strip().lower()
+    clean_summary = (summary or "").strip()
+
+    if existing:
+        stored = persist_sticker_bytes(content, content_type, original_filename, sticker_id=str(existing["id"]))
+        existing.update({key: stored[key] for key in ("url", "storage_filename", "content_type", "size", "content_sha1")})
+        existing["tags"] = _normalize_tags(list(existing.get("tags") or []) + clean_tags)
+        if clean_emotion:
+            existing["emotion"] = clean_emotion
+        if clean_summary and existing.get("summary") in ("", "表情包", None):
+            existing["summary"] = clean_summary
+        existing["enabled"] = True
+        existing["updated_at"] = _now()
+        _save_library(library)
+        return existing, False
+
+    stored = persist_sticker_bytes(content, content_type, original_filename, sticker_id=content_sha1[:12])
+    notes = getattr(session_ctx, "session_notes", {}) if session_ctx is not None else {}
+    item = {
+        "id": stored["id"],
+        "url": stored["url"],
+        "summary": clean_summary or "表情包",
+        "tags": clean_tags,
+        "emotion": clean_emotion,
+        "usage_count": 0,
+        "enabled": True,
+        "source": source,
+        "source_url": source_url,
+        "source_session_id": getattr(session_ctx, "session_id", "") if session_ctx is not None else "",
+        "source_user_id": notes.get("current_user_id", "") if isinstance(notes, dict) else "",
+        "storage_filename": stored["storage_filename"],
+        "content_type": stored["content_type"],
+        "size": stored["size"],
+        "content_sha1": content_sha1,
+        "original_filename": stored.get("original_filename", ""),
+        "created_at": _now(),
+        "updated_at": _now(),
+        "last_used_at": "",
+    }
+    item.update(extra or {})
+    stickers.append(item)
+    _save_library(library)
+    return item, True
+
+
+def _prepare_send_url(sticker_id: str) -> str:
+    """Count a send of ``sticker_id`` and return its compressed send URL."""
+    library = _load_library()
+    item = next((entry for entry in library["stickers"] if entry.get("id") == sticker_id), None)
+    if item is None:
+        raise ValueError(f"没有找到表情包 {sticker_id}")
+    item["usage_count"] = int(item.get("usage_count") or 0) + 1
+    item["last_used_at"] = _now()
+    send_url = _get_send_url(item) or str(item.get("url") or "")
+    _save_library(library)
+    return send_url
+
+
+async def create_drawn_sticker(
+    *,
+    remake: bool,
+    reference_url: str = "",
+    reference_summary: str = "",
+    prompt: str = "",
+    caption: str = "",
+    summary: str = "",
+    emotion: str = "",
+    tags: Optional[List[str]] = None,
+    session_ctx: Any = None,
+    progress: Any = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Draw (``remake=False``) or redraw a reference sticker and add it to the library.
+
+    Shared by the ``generate``/``remake`` tool operations and the WebUI API.
+    Raises ``ValueError`` for anything the caller can fix (disabled, quota,
+    missing prompt or reference).
+    """
+    from . import generation
+
+    cfg = generation.load_generation_config()
+    if cfg is None or not cfg.enabled:
+        raise ValueError("表情包生成已在 meme_sticker.yaml 中关闭。")
+    if generation.daily_limit_reached(_load_library()["stickers"], cfg):
+        raise ValueError("今天生成表情包的次数已用完，请改用 select 从库里挑一张。")
+
+    prompt = (prompt or "").strip()
+    caption = (caption or "").strip()
+    summary = (summary or "").strip()
+    reference_url = (reference_url or "").strip()
+    if remake and not reference_url:
+        raise ValueError("remake 需要参考图：传入 url，或在最近消息里有图片。")
+    if not remake and not (prompt or summary):
+        raise ValueError("generate 需要 prompt（画面描述）。")
+
+    full_prompt = generation.build_sticker_prompt(
+        style_prompt=cfg.style_prompt,
+        description=prompt or (summary if not remake else ""),
+        caption=caption,
+        emotion=(emotion or "").strip(),
+        reference_summary=(reference_summary or "").strip("[] "),
+        remake=remake,
+    )
+
+    async def report(percent: int, message: str) -> None:
+        if progress is not None:
+            await progress(percent, message)
+
+    await report(10, "正在绘制表情包...")
+    if remake:
+        reference, _type, _name = await asyncio.to_thread(_read_sticker_source, reference_url)
+        image_url = await generation.redraw_sticker(full_prompt, reference, cfg.size)
+    else:
+        image_url = await generation.draw_sticker(full_prompt, cfg.size)
+    await report(80, "正在存入表情包库...")
+
+    content, content_type, original_filename = await asyncio.to_thread(_read_sticker_source, image_url)
+    metadata = {"prompt": full_prompt}
+    if remake:
+        metadata["reference_url"] = reference_url
+    metadata.update(extra or {})
+    item, _created = await asyncio.to_thread(
+        _store_sticker,
+        content,
+        content_type,
+        original_filename,
+        source_url="",
+        summary=summary or caption or prompt[:40] or (reference_summary or "").strip("[] ") or "表情包",
+        emotion=emotion,
+        tags=list(tags or []) + ([caption] if caption else []),
+        source="remade" if remake else "generated",
+        session_ctx=session_ctx,
+        extra=metadata,
+    )
+    return item
+
+
+SENDING_OPERATIONS = ("select", "generate", "remake")
+
+
 class StickerPackInput(ToolInputSchema):
-    operation: Literal["select", "collect", "list", "delete", "update"] = Field(
+    operation: Literal["select", "collect", "generate", "remake", "list", "delete", "update"] = Field(
         ...,
-        description="操作类型：select 选择合适表情包；collect 收集表情包；list 查看素材；delete 删除素材；update 修改标签/说明。",
+        description=(
+            "操作类型：select 从库里选一张合适的表情包；collect 把聊天里的图片收进表情包库；"
+            "generate 用绘图模型按描述画一张新表情包（自动入库）；remake 参考一张已有表情包复刻/改画（自动入库）；"
+            "list 查看素材；delete 删除素材；update 修改标签/说明。"
+        ),
     )
     query: str = Field("", description="当前聊天语境、想表达的语气或筛选关键词。select/list/update 时可用。")
-    emotion: str = Field("", description="希望匹配的情绪，如 happy、tease、comfort、surprised、awkward、thanks、sleepy。")
+    emotion: str = Field("", description="情绪，如 happy、thanks、agree、tease、awkward、surprised、comfort、sorry、confused、sleepy。")
     tags: List[str] = Field(default_factory=list, description="表情包标签，如 开心、捧场、疑惑、摸鱼、道歉。")
-    url: str = Field("", description="collect/update 时的图片 URL 或文件地址；collect 留空时会尝试从最近消息里收集图片。")
+    url: str = Field(
+        "",
+        description="collect/remake/update 时的图片 URL 或文件地址；collect/remake 留空时取最近消息里的图片。",
+    )
     summary: str = Field("", description="表情包含义或画面摘要，发送时会作为图片 summary。")
+    prompt: str = Field(
+        "",
+        description="generate 时的画面描述（角色、动作、表情）；remake 时的修改要求（如 换成猫猫、改成哭脸），可留空表示原样复刻。",
+    )
+    caption: str = Field("", description="generate/remake 时图上的配字，尽量 2~8 个字；留空表示不加字。")
     sticker_id: str = Field("", description="delete/update 指定素材 ID。")
     limit: int = Field(5, description="list 返回数量，默认 5。")
     allow_send: bool = Field(
         True,
-        description="select 时是否返回可直接发送的 [image,...] 片段；为 false 时只返回候选说明。",
+        description="select/generate/remake 时是否把图片直接发给用户；为 false 时只入库或只返回候选说明。",
     )
 
 
 class MemeStickerTool(BaseTool):
     name: str = "meme_sticker"
     description: str = (
-        "管理和选择聊天表情包。可从对话图片中收集表情包，按语境/情绪/标签挑选一个合适的表情包，"
-        "并返回内部 [meme, id=..., emotion=..., tags=...] 消息片段。"
+        "管理、收集和生成聊天表情包。可把聊天里别人发的表情包收进库（collect），按语境/情绪/标签从库里挑一张（select），"
+        "库里没有合适的时用绘图模型现画一张（generate）或复刻别人的表情包（remake）。"
+        "日常发表情包更推荐直接在回复里写 [meme, emotion=..., tags=...] 片段。"
     )
     usage: str = (
-        "用于让 Agent 在轻松、庆祝、感谢、调侃、缓和尴尬等场景适度附上表情包。"
+        "用于让 Agent 在轻松、庆祝、感谢、调侃、缓和尴尬等场景附上表情包。"
         "严肃求助、隐私话题、争执升级、用户明确不想要时不要使用；一次回复最多使用一张。"
         "收集图片前应确认它适合复用，不要收集私人照片、证件、聊天截图等敏感图片。"
-        "只有 select（allow_send=true）的结果会作为图片直接发给用户；list、collect、update、delete "
-        "以及 allow_send=false 的 select 结果只返回给你自己参考，不会展示给用户。"
+        "generate/remake 要调用绘图模型，比较慢，只在库里确实没有合适表情包或用户想要定制表情包时使用。"
+        "select/generate/remake（allow_send=true）的结果会作为图片直接发给用户；list、collect、update、delete "
+        "以及 allow_send=false 的结果只返回给你自己参考，不会展示给用户。"
     )
-    manual_tags: List[str] = ["sticker", "meme", "表情包", "拟人感", "聊天", "onebot", "qq"]
+    manual_tags: List[str] = ["sticker", "meme", "表情包", "斗图", "拟人感", "聊天", "onebot", "qq"]
     args_schema: Type[BaseModel] = StickerPackInput
 
     def get_execution_contract(self, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Only a sendable ``select`` result is shown to the user.
+        """Only a sticker that is actually sent is shown to the user.
 
-        ``list``/``collect``/``update``/``delete`` and ``select`` with
+        ``list``/``collect``/``update``/``delete`` and any operation with
         ``allow_send=false`` return library details for the agent to read, not
         a message for the chat.
         """
@@ -413,7 +626,7 @@ class MemeStickerTool(BaseTool):
         allow_send = params.get("allow_send", True)
         if isinstance(allow_send, str):
             allow_send = allow_send.strip().lower() not in {"false", "0", "no", ""}
-        sends_sticker = operation == "select" and bool(allow_send)
+        sends_sticker = operation in SENDING_OPERATIONS and bool(allow_send)
         contract["visibility"] = "user_visible" if sends_sticker else "agent_only"
         return contract
 
@@ -425,7 +638,9 @@ class MemeStickerTool(BaseTool):
 
         try:
             if args.operation == "collect":
-                data = self._collect(args, session_ctx)
+                data = await asyncio.to_thread(self._collect, args, session_ctx)
+            elif args.operation in ("generate", "remake"):
+                data = await self._draw(args, session_ctx, status_callback)
             elif args.operation == "select":
                 data = self._select(args, session_ctx)
             elif args.operation == "list":
@@ -452,48 +667,52 @@ class MemeStickerTool(BaseTool):
         if not url:
             raise ValueError("没有提供图片 URL，也没有在最近消息中找到可收集图片。")
 
-        library = _load_library()
-        stickers = library["stickers"]
-        sticker_id = _make_id(url)
-        stored = persist_sticker_source(url, sticker_id=sticker_id)
-        existing = next((item for item in stickers if item.get("id") == sticker_id or item.get("url") == url), None)
-        tags = _normalize_tags(args.tags)
-        if existing:
-            existing["url"] = stored["url"]
-            existing["storage_filename"] = stored["storage_filename"]
-            existing["content_type"] = stored["content_type"]
-            existing["size"] = stored["size"]
-            existing["tags"] = _normalize_tags(list(existing.get("tags") or []) + tags)
-            if args.emotion:
-                existing["emotion"] = args.emotion.strip().lower()
-            if summary:
-                existing["summary"] = summary
-            existing["updated_at"] = _now()
-            _save_library(library)
-            return f"已更新表情包 {existing['id']}：{existing.get('summary') or existing.get('url')}"
+        content, content_type, original_filename = _read_sticker_source(url)
+        item, created = _store_sticker(
+            content,
+            content_type,
+            original_filename,
+            source_url=url,
+            summary=summary,
+            emotion=args.emotion,
+            tags=args.tags,
+            source="collected",
+            session_ctx=session_ctx,
+        )
+        if created:
+            return f"已收集表情包 {item['id']}：{item['summary']}"
+        return f"已更新表情包 {item['id']}：{item.get('summary') or item.get('url')}"
 
-        target = getattr(session_ctx, "session_notes", {}) if session_ctx is not None else {}
-        item = {
-            "id": sticker_id,
-            "url": stored["url"],
-            "summary": summary or "表情包",
-            "tags": tags,
-            "emotion": args.emotion.strip().lower() or "",
-            "usage_count": 0,
-            "enabled": True,
-            "source_session_id": getattr(session_ctx, "session_id", "") if session_ctx is not None else "",
-            "source_user_id": target.get("current_user_id", ""),
-            "storage_filename": stored["storage_filename"],
-            "content_type": stored["content_type"],
-            "size": stored["size"],
-            "original_filename": stored.get("original_filename", ""),
-            "created_at": _now(),
-            "updated_at": _now(),
-            "last_used_at": "",
-        }
-        stickers.append(item)
-        _save_library(library)
-        return f"已收集表情包 {sticker_id}：{item['summary']}"
+    async def _draw(self, args: StickerPackInput, session_ctx: Any, status_callback: Any) -> str:
+        remake = args.operation == "remake"
+        reference_url = args.url.strip()
+        reference_summary = ""
+        if remake and not reference_url and session_ctx is not None:
+            recent = _extract_recent_image(session_ctx)
+            if recent:
+                reference_url = recent["url"]
+                reference_summary = recent.get("summary", "")
+
+        async def progress(percent: int, message: str) -> None:
+            await self.report_progress(percent, message, status_callback)
+
+        item = await create_drawn_sticker(
+            remake=remake,
+            reference_url=reference_url,
+            reference_summary=reference_summary,
+            prompt=args.prompt,
+            caption=args.caption,
+            summary=args.summary,
+            emotion=args.emotion,
+            tags=args.tags,
+            session_ctx=session_ctx,
+            progress=progress,
+        )
+        if not args.allow_send:
+            return f"已生成并收进表情包库 {item['id']}：{item['summary']}"
+        send_url = await asyncio.to_thread(_prepare_send_url, item["id"])
+        mark_sticker_sent(session_ctx)
+        return f"[image,url={to_absolute_url(send_url)},summary={item['summary']}]"
 
     def _select(self, args: StickerPackInput, session_ctx: Any = None) -> str:
         selected = _select_sticker(

@@ -3,9 +3,9 @@ manifest_version: 1
 extension:
   id: "meme_stickers"
   name: "Meme Stickers"
-  version: "1.1.1"
+  version: "1.2.0"
   type: "tool"
-  description: "A full-stack plugin providing a meme sticker library, AI injection logic, and frontend management GUI."
+  description: "A full-stack plugin providing a meme sticker library, sticker collection and AI generation, prompt pacing, and a frontend management GUI."
   author: "Ainierheokami"
   repository: "https://github.com/Ainierheokami/foxran-plugin-meme-stickers"
   tags:

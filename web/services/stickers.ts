@@ -14,6 +14,8 @@ export type StickerItem = {
   updated_at?: string
   last_used_at?: string
   thumb_url?: string
+  prompt?: string
+  reference_id?: string
 }
 
 export type StickerListResponse = {
@@ -21,9 +23,27 @@ export type StickerListResponse = {
   items: StickerItem[]
   tags: string[]
   emotions: string[]
+  sources?: string[]
 }
 
-export async function listStickers(params: { q?: string; tag?: string; emotion?: string; limit?: number }) {
+export type GenerationStatus = {
+  enabled: boolean
+  can_generate: boolean
+  can_remake: boolean
+  used_today: number
+  max_per_day: number
+  size: string
+}
+
+export type DrawPayload = {
+  prompt?: string
+  caption?: string
+  summary?: string
+  emotion?: string
+  tags?: string[]
+}
+
+export async function listStickers(params: { q?: string; tag?: string; emotion?: string; source?: string; limit?: number }) {
   const res = await api.get<StickerListResponse>('/stickers', { params })
   return res.data
 }
@@ -76,4 +96,22 @@ export async function autoTagStickers(payload: {
 
 export async function deleteSticker(id: string) {
   await api.delete(`/stickers/${id}`)
+}
+
+export async function getGenerationStatus() {
+  const res = await api.get<GenerationStatus>('/stickers/generation/status')
+  return res.data
+}
+
+export async function generateSticker(payload: DrawPayload) {
+  const res = await api.post<{ item: StickerItem }>('/stickers/generate', payload)
+  return res.data.item
+}
+
+/** Remake a library sticker (`id`) or any image URL (`url`). */
+export async function remakeSticker(reference: { id?: string; url?: string }, payload: DrawPayload) {
+  const res = reference.id
+    ? await api.post<{ item: StickerItem }>(`/stickers/${reference.id}/remake`, payload)
+    : await api.post<{ item: StickerItem }>('/stickers/remake', { ...payload, url: reference.url || '' })
+  return res.data.item
 }
