@@ -49,6 +49,7 @@ def _prompt_cfg(**overrides):
 
 
 COLLECTION = SimpleNamespace(suggest_collect=True, sticker_summary_keywords=["表情"])
+NO_COLLECT = SimpleNamespace(suggest_collect=False, sticker_summary_keywords=["表情"])
 LIBRARY = {"count": 2, "emotions": ["happy"], "tags": ["开心"]}
 EMPTY = {"count": 0, "emotions": [], "tags": []}
 
@@ -209,13 +210,13 @@ def test_incoming_sticker_suggests_collect_once_and_invites_a_reply():
 
 def test_empty_library_only_hints_when_drawing_is_possible():
     hints, needs_tool = meme_prompt.build_hints(
-        prompt_cfg=_prompt_cfg(), collection_cfg=None, state={}, text="嗨", summary=EMPTY, can_draw=False, now=1000
+        prompt_cfg=_prompt_cfg(), collection_cfg=NO_COLLECT, state={}, text="嗨", summary=EMPTY, can_draw=False, now=1000
     )
     assert hints == [] and not needs_tool
 
     state = {"turns_since_sticker": 5}
     hints, needs_tool = meme_prompt.build_hints(
-        prompt_cfg=_prompt_cfg(), collection_cfg=None, state=state, text="嗨", summary=EMPTY, can_draw=True, now=1000
+        prompt_cfg=_prompt_cfg(), collection_cfg=NO_COLLECT, state=state, text="嗨", summary=EMPTY, can_draw=True, now=1000
     )
     assert "operation=generate" in hints[0] and "还是空的" in hints[0]
     assert needs_tool
@@ -234,3 +235,56 @@ def test_library_summary_counts_enabled_stickers(store):
     summary = meme_prompt.library_summary()
 
     assert summary == {"count": 2, "emotions": ["happy"], "tags": ["开心", "捧场"]}
+
+
+@pytest.mark.asyncio
+async def test_prompt_hook_injects_through_plugin_prompt_hints(store, monkeypatch):
+    from app.tools.plugins import meme_stickers
+    from app.tools.plugins.meme_stickers.backend import config as meme_config
+
+    meme_tool._save_library({"version": 1, "stickers": [{"id": "a", "url": "/a.png", "emotion": "happy"}]})
+    cfg = meme_config.MemeStickerConfig()
+    monkeypatch.setattr(meme_config, "load_config", lambda: cfg)
+    monkeypatch.setattr(generation, "generation_available", lambda: False)
+    tool_manager = SimpleNamespace(get_tool=lambda name: meme_tool.MemeStickerTool() if name == "meme_sticker" else None)
+    session = SimpleNamespace(is_subagent=False, platform="web", session_notes={})
+    message = SimpleNamespace(role="user", content="来个表情包")
+    existing = {"source": "other", "text": "keep me"}
+
+    context = await meme_stickers.before_prompt_build(
+        {"recommended_tools": "unchanged", "plugin_prompt_hints": [existing]},
+        session_ctx=session,
+        current_message=message,
+        tool_manager=tool_manager,
+    )
+
+    assert context["recommended_tools"] == "unchanged"
+    hints = context["plugin_prompt_hints"]
+    assert hints[0] == existing
+    assert [hint["source"] for hint in hints[1:]] == ["meme_stickers"]
+    assert hints[1]["text"].startswith("[表情包机会]")
+
+
+def test_migration_backfills_content_hash_so_old_stickers_dedupe(store):
+    import hashlib
+
+    from app.tools.plugins.meme_stickers.backend.migrations import backfill_content_sha1
+
+    asset_dir = store / "assets"
+    asset_dir.mkdir()
+    (asset_dir / "old01.png").write_bytes(b"old sticker")
+    meme_tool._save_library({
+        "version": 1,
+        "stickers": [{"id": "old01", "url": "/api/stickers/assets/old01.png", "storage_filename": "old01.png", "summary": "旧图"}],
+    })
+
+    assert backfill_content_sha1() == 1
+    assert backfill_content_sha1() == 0
+    (item,) = meme_tool._load_library()["stickers"]
+    assert item["content_sha1"] == hashlib.sha1(b"old sticker").hexdigest()
+
+    _stored, created = meme_tool._store_sticker(
+        b"old sticker", "image/png", "again.png", source_url="https://q.qq.com/x", summary="", emotion="", tags=["复用"], source="collected"
+    )
+    assert not created
+    assert len(meme_tool._load_library()["stickers"]) == 1

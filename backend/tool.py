@@ -74,10 +74,6 @@ def _normalize_tags(tags: Optional[List[str]]) -> List[str]:
     return result
 
 
-def _make_id(url: str) -> str:
-    return hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]
-
-
 def to_absolute_url(url: str) -> str:
     if url.startswith("/"):
         try:
@@ -407,23 +403,14 @@ def _store_sticker(
     """Add image bytes to the library, merging into an existing copy of the same image.
 
     QQ hands out a fresh URL every time a sticker is sent, so duplicates are
-    found by content hash first and only then by the legacy URL-derived id.
-    Returns ``(item, created)``.
+    found by content hash. Returns ``(item, created)``.
     """
     if len(content) > MAX_STICKER_BYTES:
         raise ValueError("表情包文件过大")
     content_sha1 = hashlib.sha1(content).hexdigest()
-    legacy_id = _make_id(source_url) if source_url else ""
     library = _load_library()
     stickers = library["stickers"]
-    existing = next(
-        (
-            item for item in stickers
-            if item.get("content_sha1") == content_sha1
-            or (legacy_id and item.get("id") == legacy_id)
-        ),
-        None,
-    )
+    existing = next((item for item in stickers if item.get("content_sha1") == content_sha1), None)
     clean_tags = _normalize_tags(tags)
     clean_emotion = (emotion or "").strip().lower()
     clean_summary = (summary or "").strip()
@@ -506,7 +493,7 @@ async def create_drawn_sticker(
     from . import generation
 
     cfg = generation.load_generation_config()
-    if cfg is None or not cfg.enabled:
+    if not cfg.enabled:
         raise ValueError("表情包生成已在 meme_sticker.yaml 中关闭。")
     if generation.daily_limit_reached(_load_library()["stickers"], cfg):
         raise ValueError("今天生成表情包的次数已用完，请改用 select 从库里挑一张。")

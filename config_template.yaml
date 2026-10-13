@@ -1,0 +1,71 @@
+# 表情包插件配置。
+prompt:
+  # 是否启用表情包机会提示。启用后，系统会在合适轮次向 Agent 暴露表情包发送提示。
+  enabled: true
+
+  # 每轮都向 Agent 简短说明可以用 [meme,...] 发表情包，让它在冷却外也能自己决定发不发。
+  always_show_capability: true
+
+  # 距离上次表情包提示或发送后，至少经过多少条用户消息才再次注入“建议发表情包”提示。
+  min_messages_between_prompts: 2
+
+  # 发送表情包后冷却多少秒，冷却期间不注入“建议发表情包”提示。
+  cooldown_seconds: 60
+
+  # 注入提示后是否持续提示，直到 Agent 发送一条表情包。
+  persist_until_sent: true
+
+  # 当 persist_until_sent 为 true 时，最多连续提示多少轮；0 表示不限制。
+  max_persistent_turns: 3
+
+  # 允许注入表情包机会提示的平台关键词列表。留空表示所有平台都允许。
+  allowed_platforms:
+    []
+
+  # 当用户消息包含这些关键词时，不注入“建议发表情包”提示。英文关键词按整词匹配。
+  blocked_keywords:
+    - traceback
+    - exception
+    - 崩溃
+    - 隐私
+    - 密码
+    - 证件
+    - 银行卡
+    - 医疗
+    - 法律
+    - 投诉
+    - 吵架
+    - 抑郁
+    - 自杀
+    - 紧急
+    - 事故
+    - 报警
+    - 去世
+    - 节哀
+
+generation:
+  # 是否允许 Agent 调用 image_generation / image_edit 模型生成或复刻表情包。
+  enabled: true
+
+  # 生成表情包时附加在描述前的风格提示词。
+  style_prompt: 聊天表情包，单个主体居中，夸张生动的表情和动作，简洁干净的纯色或透明背景，粗描边卡通风格，适合缩小到 128px 仍然清晰；如果有配字，文字简短、字号大、清晰可读
+
+  # 生成尺寸，交给模型按自身规则就近修正。
+  size: 1024x1024
+
+  # 每天最多生成/复刻多少张表情包；0 表示不限制。
+  max_per_day: 20
+
+  # 是否在 prompt 中提示 Agent 库里没有合适表情包时可以生成。
+  hint_enabled: true
+
+collection:
+  # 用户发来表情包时，提示 Agent 可以把合适的表情包收进库。
+  suggest_collect: true
+
+  # 图片 summary 包含这些词时视为表情包（QQ 表情一般是 [动画表情]）。
+  sticker_summary_keywords:
+    - 表情
+    - sticker
+    - meme
+    - emoji

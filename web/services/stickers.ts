@@ -115,3 +115,37 @@ export async function remakeSticker(reference: { id?: string; url?: string }, pa
     : await api.post<{ item: StickerItem }>('/stickers/remake', { ...payload, url: reference.url || '' })
   return res.data.item
 }
+
+export type StickerConfig = {
+  prompt: {
+    enabled: boolean
+    always_show_capability: boolean
+    min_messages_between_prompts: number
+    cooldown_seconds: number
+    persist_until_sent: boolean
+    max_persistent_turns: number
+    allowed_platforms: string[]
+    blocked_keywords: string[]
+  }
+  generation: {
+    enabled: boolean
+    style_prompt: string
+    size: string
+    max_per_day: number
+    hint_enabled: boolean
+  }
+  collection: {
+    suggest_collect: boolean
+    sticker_summary_keywords: string[]
+  }
+}
+
+export async function getStickerConfig() {
+  const res = await api.get<{ config: StickerConfig }>('/stickers/config')
+  return res.data.config
+}
+
+export async function saveStickerConfig(config: StickerConfig) {
+  const res = await api.post<{ config: StickerConfig }>('/stickers/config', config)
+  return res.data.config
+}

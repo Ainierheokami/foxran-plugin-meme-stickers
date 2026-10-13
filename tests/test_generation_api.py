@@ -23,7 +23,6 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(meme_tool, "LIBRARY_PATH", tmp_path / "stickers.json")
     monkeypatch.setattr(meme_tool, "STICKER_ASSETS_DIR", tmp_path / "assets")
     monkeypatch.setattr(meme_tool, "STICKER_SEND_DIR", tmp_path / "send")
-    monkeypatch.setattr(meme_api, "STICKER_ASSETS_DIR", tmp_path / "assets")
     cfg = SimpleNamespace(enabled=True, style_prompt="卡通", size="512x512", max_per_day=3, hint_enabled=True)
     monkeypatch.setattr(generation, "load_generation_config", lambda: cfg)
     monkeypatch.setattr(generation, "model_available", lambda tag: tag == "image_edit")
@@ -96,3 +95,14 @@ def test_generate_errors_are_reported(client, monkeypatch):
     assert "no model" in failed.json()["detail"]
 
     assert client.post("/api/stickers/nope/remake", json={}).status_code == 404
+
+
+def test_upload_dedupes_by_content(client):
+    files = [("files", ("a.png", b"same bytes", "image/png"))]
+
+    first = client.post("/api/stickers/upload", files=files, data={"tags": "开心"}).json()
+    second = client.post("/api/stickers/upload", files=files, data={"tags": "捧场"}).json()
+
+    assert first["items"][0]["id"] == second["items"][0]["id"]
+    assert second["items"][0]["tags"] == ["开心", "捧场"]
+    assert second["items"][0]["source"] == "upload"

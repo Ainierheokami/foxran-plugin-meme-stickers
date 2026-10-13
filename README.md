@@ -35,7 +35,7 @@ python scripts/install_market_plugin.py https://github.com/Ainierheokami/foxran-
 
 ## ⚙️ 配置
 
-配置写在宿主的 `config/meme_sticker.yaml`，也可以在 WebUI 设置页可视化修改：
+配置由插件管理（`backend/config.py`，模板 `config_template.yaml`），保存在宿主配置目录的 `config/meme_sticker.yaml`。插件通过 `configEditors` 向 WebUI 设置页注册可视化编辑器（需要宿主 4.0.0 及以上），也可以切换到源文件直接编辑；直接改文件后，下一轮对话就会生效：
 
 | 段落 | 主要字段 |
 | --- | --- |

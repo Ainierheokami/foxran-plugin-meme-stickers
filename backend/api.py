@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import mimetypes
@@ -15,8 +16,9 @@ from pydantic import BaseModel, Field
 
 from app.api.endpoints.auth import require_auth
 from app.logger import setup_logger
-from app.runtime.paths import STICKER_ASSETS_DIR, STICKERS_DIR
+from app.runtime.paths import STICKERS_DIR
 from . import generation
+from .config import MemeStickerConfig, load_config, save_config
 from .tool import (
     create_drawn_sticker,
     build_sticker_asset_url,
@@ -24,10 +26,11 @@ from .tool import (
     persist_sticker_source,
     resolve_sticker_storage_url,
     _load_library,
-    _make_id,
     _normalize_tags,
     _now,
+    _read_sticker_source,
     _save_library,
+    _store_sticker,
 )
 
 
@@ -151,67 +154,6 @@ def _make_sticker_thumb(source_path: Path, size: int) -> bytes:
     except Exception as e:
         logger.warning(f"表情包缩略图生成失败 {source_path}: {e}")
         raise HTTPException(status_code=500, detail="thumb_failed")
-
-
-def _upsert_sticker(
-    *,
-    url: str,
-    summary: str = "",
-    emotion: str = "",
-    tags: Optional[List[str]] = None,
-    source: str = "",
-    sticker_id: str = "",
-    storage_filename: str = "",
-) -> Dict[str, Any]:
-    if not url:
-        raise ValueError("缺少表情包 URL")
-
-    library = _load_library()
-    stickers = library["stickers"]
-    sticker_id = sticker_id.strip() or _make_id(url)
-    normalized_tags = _normalize_tags(tags)
-    existing = next((item for item in stickers if item.get("id") == sticker_id or item.get("url") == url), None)
-
-    if existing:
-        existing["tags"] = _normalize_tags(list(existing.get("tags") or []) + normalized_tags)
-        if summary:
-            existing["summary"] = summary
-        if emotion:
-            existing["emotion"] = emotion.strip().lower()
-        if storage_filename:
-            existing["storage_filename"] = storage_filename
-        existing["updated_at"] = _now()
-        _save_library(library)
-        return existing
-
-    item = {
-        "id": sticker_id,
-        "url": url,
-        "summary": summary or "表情包",
-        "tags": normalized_tags,
-        "emotion": emotion.strip().lower(),
-        "usage_count": 0,
-        "enabled": True,
-        "source": source,
-        "storage_filename": storage_filename,
-        "created_at": _now(),
-        "updated_at": _now(),
-        "last_used_at": "",
-    }
-    stickers.append(item)
-    _save_library(library)
-    return item
-
-
-def _patch_sticker_metadata(sticker_id: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
-    library = _load_library()
-    item = next((entry for entry in library["stickers"] if entry.get("id") == sticker_id), None)
-    if not item:
-        return metadata
-    item.update({k: v for k, v in metadata.items() if v is not None})
-    item["updated_at"] = _now()
-    _save_library(library)
-    return item
 
 
 def _extract_json_array(text: str) -> List[Dict[str, Any]]:
@@ -418,18 +360,33 @@ async def list_stickers(
     }
 
 
+@router.get("/api/stickers/config")
+async def get_sticker_config(_: bool = Depends(require_auth)):
+    """Settings for the WebUI visual editor (``config/meme_sticker.yaml``)."""
+    return {"config": load_config(force_reload=True).model_dump()}
+
+
+@router.post("/api/stickers/config")
+async def update_sticker_config(payload: MemeStickerConfig, _: bool = Depends(require_auth)):
+    try:
+        saved = save_config(payload)
+    except OSError as e:
+        logger.error(f"保存表情包配置失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "success", "config": saved.model_dump()}
+
+
 @router.get("/api/stickers/generation/status")
 async def get_generation_status(_: bool = Depends(require_auth)):
     """What the WebUI generator can do right now: config switch, models and today's quota."""
     cfg = generation.load_generation_config()
-    enabled = bool(cfg is not None and cfg.enabled)
     return {
-        "enabled": enabled,
-        "can_generate": enabled and generation.model_available("image_generation"),
-        "can_remake": enabled and generation.model_available("image_edit"),
+        "enabled": cfg.enabled,
+        "can_generate": cfg.enabled and generation.model_available("image_generation"),
+        "can_remake": cfg.enabled and generation.model_available("image_edit"),
         "used_today": generation.generated_today(_load_library()["stickers"]),
-        "max_per_day": int(getattr(cfg, "max_per_day", 0) or 0),
-        "size": str(getattr(cfg, "size", "") or ""),
+        "max_per_day": cfg.max_per_day,
+        "size": cfg.size,
     }
 
 
@@ -494,25 +451,23 @@ async def _remake(
 
 @router.post("/api/stickers")
 async def create_sticker(payload: StickerCreateRequest, _: bool = Depends(require_auth)):
+    url = payload.url.strip()
     try:
-        stored = persist_sticker_source(payload.url.strip(), sticker_id=_make_id(payload.url.strip()))
-        item = _upsert_sticker(
-            url=stored["url"],
-            summary=payload.summary.strip(),
-            emotion=payload.emotion.strip(),
+        content, content_type, original_filename = await asyncio.to_thread(_read_sticker_source, url)
+        item, _created = await asyncio.to_thread(
+            _store_sticker,
+            content,
+            content_type,
+            original_filename,
+            source_url=url,
+            summary=payload.summary,
+            emotion=payload.emotion,
             tags=payload.tags,
             source="url",
-            sticker_id=stored["id"],
-            storage_filename=stored["storage_filename"],
         )
-        item = _patch_sticker_metadata(item["id"], {
-            "content_type": stored["content_type"],
-            "size": stored["size"],
-            "original_filename": stored.get("original_filename", ""),
-        })
-        return {"item": _decorate(item)}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    return {"item": _decorate(item)}
 
 
 @router.post("/api/stickers/upload")
@@ -533,29 +488,18 @@ async def upload_stickers(
                 failures.append({"filename": file.filename, "error": "空文件"})
                 continue
             original_name = file.filename or "upload_sticker"
-            sticker_id = _make_id(f"{original_name}:{len(content)}:{hash(content)}")
-            ext = mimetypes.guess_extension((file.content_type or "").split(";", 1)[0]) or Path(original_name).suffix or ".bin"
-            storage_filename = f"{sticker_id}{ext[:12]}"
-            STICKER_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-            (STICKER_ASSETS_DIR / storage_filename).write_bytes(content)
-            access_url = build_sticker_asset_url(storage_filename)
-            item_summary = summary.strip() or original_name or "表情包"
-            item = _upsert_sticker(
-                url=access_url,
-                summary=item_summary,
-                emotion=emotion.strip(),
+            item, _created = await asyncio.to_thread(
+                _store_sticker,
+                content,
+                (file.content_type or "application/octet-stream").split(";", 1)[0].strip().lower(),
+                original_name,
+                source_url="",
+                summary=summary.strip() or original_name,
+                emotion=emotion,
                 tags=tag_list,
                 source="upload",
-                sticker_id=sticker_id,
-                storage_filename=storage_filename,
             )
-            item = _patch_sticker_metadata(item["id"], {
-                "content_type": (file.content_type or "application/octet-stream").split(";", 1)[0].strip().lower(),
-                "size": len(content),
-                "original_filename": original_name,
-            })
-            decorated = _decorate(item)
-            created.append(decorated)
+            created.append(_decorate(item))
         except Exception as e:
             logger.warning(f"表情包上传失败: {file.filename}: {e}")
             failures.append({"filename": file.filename, "error": str(e)})
@@ -576,6 +520,7 @@ async def update_sticker(sticker_id: str, payload: StickerUpdateRequest, _: bool
             item["content_type"] = stored["content_type"]
             item["size"] = stored["size"]
             item["original_filename"] = stored.get("original_filename", "")
+            item["content_sha1"] = stored["content_sha1"]
             item.pop("send_url", None)
             item.pop("send_content_type", None)
             item.pop("send_size", None)

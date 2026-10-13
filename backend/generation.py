@@ -11,9 +11,11 @@ from __future__ import annotations
 import time
 from datetime import datetime
 from io import BytesIO
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from app.logger import setup_logger
+
+from .config import MemeStickerGenerationConfig, load_config
 
 
 logger = setup_logger(__name__)
@@ -23,15 +25,9 @@ _AVAILABILITY_TTL_SECONDS = 60.0
 _availability_cache: Dict[str, tuple[float, bool]] = {}
 
 
-def load_generation_config() -> Any:
-    """The host's ``generation`` section, or ``None`` on hosts that predate it."""
-    try:
-        from app.config import load_meme_sticker_config
-
-        return getattr(load_meme_sticker_config(), "generation", None)
-    except Exception as e:
-        logger.debug(f"[表情包插件] 读取生成配置失败: {e}")
-        return None
+def load_generation_config() -> MemeStickerGenerationConfig:
+    """The ``generation`` section of ``meme_sticker.yaml``."""
+    return load_config().generation
 
 
 def model_available(tag: str) -> bool:
@@ -54,7 +50,7 @@ def model_available(tag: str) -> bool:
 
 def generation_available() -> bool:
     cfg = load_generation_config()
-    if cfg is None or not cfg.enabled:
+    if not cfg.enabled:
         return False
     return model_available("image_generation") or model_available("image_edit")
 
@@ -135,6 +131,6 @@ async def redraw_sticker(prompt: str, image_bytes: bytes, size: str) -> str:
     return result.url
 
 
-def daily_limit_reached(stickers: list[Dict[str, Any]], cfg: Optional[Any]) -> bool:
-    limit = int(getattr(cfg, "max_per_day", 0) or 0)
+def daily_limit_reached(stickers: list[Dict[str, Any]], cfg: MemeStickerGenerationConfig) -> bool:
+    limit = int(cfg.max_per_day or 0)
     return limit > 0 and generated_today(stickers) >= limit

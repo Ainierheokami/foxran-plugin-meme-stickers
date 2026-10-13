@@ -143,7 +143,7 @@ def tool_block(tool_instance: Any) -> str:
 def build_hints(
     *,
     prompt_cfg: Any,
-    collection_cfg: Optional[Any],
+    collection_cfg: Any,
     state: Dict[str, Any],
     text: str,
     summary: Dict[str, Any],
@@ -159,8 +159,8 @@ def build_hints(
     hints: List[str] = []
     needs_tool = False
 
-    incoming = sticker_images(text, getattr(collection_cfg, "sticker_summary_keywords", None) or ["表情"])
-    if collection_cfg is not None and getattr(collection_cfg, "suggest_collect", False):
+    incoming = sticker_images(text, collection_cfg.sticker_summary_keywords)
+    if collection_cfg.suggest_collect:
         seen = state.setdefault("collect_hinted_urls", [])
         fresh = [image for image in incoming if image["url"] not in seen]
         if fresh:
@@ -212,7 +212,7 @@ def build_hints(
             state["prompt_active"] = False
             state["prompt_turns"] = 0
             state["turns_since_sticker"] = 0
-    elif summary["count"] and getattr(prompt_cfg, "always_show_capability", True) and not blocked:
+    elif summary["count"] and prompt_cfg.always_show_capability and not blocked:
         hints.append(capability_hint(summary))
 
     return hints, needs_tool
