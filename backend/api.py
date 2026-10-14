@@ -524,6 +524,7 @@ async def update_sticker(sticker_id: str, payload: StickerUpdateRequest, _: bool
             item.pop("send_url", None)
             item.pop("send_content_type", None)
             item.pop("send_size", None)
+            item.pop("send_profile", None)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
     if payload.summary is not None:

@@ -72,6 +72,24 @@ class MemeStickerCollectionConfig(BaseModel):
     )
 
 
+class MemeStickerSendingConfig(BaseModel):
+    """表情包发送图配置：发出去的是按这里压缩过的 WebP 副本，原图不变。"""
+
+    max_side: int = Field(384, description="发送图最长边（像素），范围 64~2048。")
+    quality: int = Field(72, description="WebP 压缩质量，范围 30~95。")
+    max_kb: int = Field(1024, description="发送图最大体积（KB）；超出时依次降低质量和尺寸直到不超过。0 表示不限制。")
+    max_frames: int = Field(48, description="动图最多保留多少帧，范围 1~200。")
+
+    def clamped(self) -> "MemeStickerSendingConfig":
+        """配置文件里写出范围的值按边界处理，避免整份配置因一个数字失效。"""
+        return MemeStickerSendingConfig(
+            max_side=min(max(int(self.max_side), 64), 2048),
+            quality=min(max(int(self.quality), 30), 95),
+            max_kb=max(int(self.max_kb), 0),
+            max_frames=min(max(int(self.max_frames), 1), 200),
+        )
+
+
 class MemeStickerConfig(BaseModel):
     """表情包插件配置"""
 
@@ -83,6 +101,10 @@ class MemeStickerConfig(BaseModel):
     collection: MemeStickerCollectionConfig = Field(
         default_factory=MemeStickerCollectionConfig,
         description="表情包收集相关配置。",
+    )
+    sending: MemeStickerSendingConfig = Field(
+        default_factory=MemeStickerSendingConfig,
+        description="表情包发送图的尺寸和体积限制。",
     )
 
 
@@ -147,6 +169,7 @@ def render_config_yaml(config: MemeStickerConfig) -> str:
     prompt = config.prompt
     generation = config.generation
     collection = config.collection
+    sending = config.sending
     return (
         "# 表情包插件配置。\n"
         "prompt:\n"
@@ -184,5 +207,15 @@ def render_config_yaml(config: MemeStickerConfig) -> str:
         f"  suggest_collect: {str(collection.suggest_collect).lower()}\n\n"
         "  # 图片 summary 包含这些词时视为表情包（QQ 表情一般是 [动画表情]）。\n"
         "  sticker_summary_keywords:\n"
-        f"{_render_string_list(collection.sticker_summary_keywords, 4)}"
+        f"{_render_string_list(collection.sticker_summary_keywords, 4)}\n"
+        "sending:\n"
+        "  # 发出去的是按下面设置压缩过的 WebP 副本，库里的原图不变；修改后下次发送时重新生成。\n"
+        "  # 发送图最长边（像素），范围 64~2048。\n"
+        f"  max_side: {sending.max_side}\n\n"
+        "  # WebP 压缩质量，范围 30~95。\n"
+        f"  quality: {sending.quality}\n\n"
+        "  # 发送图最大体积（KB）；超出时依次降低质量和尺寸直到不超过。0 表示不限制。\n"
+        f"  max_kb: {sending.max_kb}\n\n"
+        "  # 动图最多保留多少帧，范围 1~200。\n"
+        f"  max_frames: {sending.max_frames}\n"
     )

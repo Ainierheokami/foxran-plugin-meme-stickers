@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -13,11 +14,12 @@
     "vue-router": "^4.2.0"
   },
   "devDependencies": {
+    "@types/node": "^22.20.5",
     "@vitejs/plugin-vue": "^5.0.0",
+    "axios": "^1.6.0",
     "typescript": "^5.2.2",
     "vite": "^5.0.0",
     "vite-plugin-css-injected-by-js": "^3.4.0",
-    "vue-tsc": "^1.8.27",
-    "axios": "^1.6.0"
+    "vue-tsc": "^3.3.13"
   }
 }

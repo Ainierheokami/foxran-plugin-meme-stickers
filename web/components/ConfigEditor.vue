@@ -133,8 +133,39 @@
               </label>
             </div>
 
+          </div>
+        </section>
+
+        <section class="card">
+          <header class="card-head sky">
+            <h3><ImageDown class="icon accent-sky" />发送图大小</h3>
+            <p>Agent 发出去的是按这里压缩过的 WebP 副本，库里的原图不变；改动后每张表情在下次发送时重新生成。</p>
+          </header>
+          <div class="card-body">
+            <div class="grid-4">
+              <label class="field-label">
+                <span>最长边</span>
+                <input v-model.number="config.sending.max_side" class="field" type="number" min="64" max="2048" />
+                <small>像素，64~2048。</small>
+              </label>
+              <label class="field-label">
+                <span>体积上限</span>
+                <input v-model.number="config.sending.max_kb" class="field" type="number" min="0" />
+                <small>KB；超出时先降质量再缩小尺寸。0 表示不限制。</small>
+              </label>
+              <label class="field-label">
+                <span>压缩质量</span>
+                <input v-model.number="config.sending.quality" class="field" type="number" min="30" max="95" />
+                <small>30~95，越高越清晰、体积越大。</small>
+              </label>
+              <label class="field-label">
+                <span>动图最多帧数</span>
+                <input v-model.number="config.sending.max_frames" class="field" type="number" min="1" max="200" />
+                <small>超出的帧会被丢掉。</small>
+              </label>
+            </div>
             <div class="note">
-              保存后写回 <code>config/meme_sticker.yaml</code>，下一轮对话即生效；需要手工调整时可切到源文件模式。
+              只对存在本地的表情生效，只有外部链接的表情会原样发送。保存后写回 <code>config/meme_sticker.yaml</code>，下一轮对话即生效；需要手工调整时可切到源文件模式。
             </div>
           </div>
         </section>
@@ -145,7 +176,7 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { Loader2, RefreshCw, Wand, Zap } from 'lucide-vue-next'
+import { ImageDown, Loader2, RefreshCw, Wand, Zap } from 'lucide-vue-next'
 import { getStickerConfig, saveStickerConfig, type StickerConfig } from '../services/stickers'
 
 withDefaults(defineProps<{ currentFile?: string }>(), { currentFile: 'meme_sticker.yaml' })
@@ -168,6 +199,7 @@ function defaultConfig(): StickerConfig {
     },
     generation: { enabled: true, style_prompt: '', size: '1024x1024', max_per_day: 20, hint_enabled: true },
     collection: { suggest_collect: true, sticker_summary_keywords: [] },
+    sending: { max_side: 384, quality: 72, max_kb: 1024, max_frames: 48 },
   }
 }
 
@@ -193,6 +225,7 @@ function apply(data: StickerConfig) {
     prompt: { ...defaults.prompt, ...data.prompt },
     generation: { ...defaults.generation, ...data.generation },
     collection: { ...defaults.collection, ...data.collection },
+    sending: { ...defaults.sending, ...data.sending },
   }
   text.allowedPlatforms = listToText(config.value.prompt.allowed_platforms)
   text.blockedKeywords = listToText(config.value.prompt.blocked_keywords)
@@ -203,19 +236,31 @@ function nonNegative(value: unknown) {
   return Math.max(0, Number(value) || 0)
 }
 
+function clamp(value: unknown, min: number, max: number, fallback: number) {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 ? Math.min(max, Math.max(min, Math.round(number))) : fallback
+}
+
+// 宿主 4.4.0 起在 window.Foxran.ui 提供 toast；旧宿主退回 alert。
+const hostToast = (window as any).Foxran?.ui?.toast
+const notify = {
+  success: (msg: string) => (hostToast ? hostToast.success(msg) : alert(msg)),
+  error: (msg: string) => (hostToast ? hostToast.error(msg) : alert(msg)),
+}
+
 async function load() {
   loading.value = true
   try {
     apply(await getStickerConfig())
   } catch (err: any) {
-    alert(`加载表情包配置失败: ${err?.response?.data?.detail || err?.message || err}`)
+    notify.error(`加载表情包配置失败: ${err?.response?.data?.detail || err?.message || err}`)
   } finally {
     loading.value = false
   }
 }
 
 async function save() {
-  const { prompt, generation, collection } = config.value
+  const { prompt, generation, collection, sending } = config.value
   const payload: StickerConfig = {
     prompt: {
       enabled: Boolean(prompt.enabled),
@@ -238,12 +283,18 @@ async function save() {
       suggest_collect: Boolean(collection.suggest_collect),
       sticker_summary_keywords: textToList(text.stickerSummaryKeywords),
     },
+    sending: {
+      max_side: clamp(sending.max_side, 64, 2048, 384),
+      quality: clamp(sending.quality, 30, 95, 72),
+      max_kb: nonNegative(sending.max_kb),
+      max_frames: clamp(sending.max_frames, 1, 200, 48),
+    },
   }
   try {
     apply(await saveStickerConfig(payload))
-    alert('表情包配置已保存')
+    notify.success('表情包配置已保存')
   } catch (err: any) {
-    alert(`保存表情包配置失败: ${err?.response?.data?.detail || err?.message || err}`)
+    notify.error(`保存表情包配置失败: ${err?.response?.data?.detail || err?.message || err}`)
     throw err
   }
 }
@@ -352,6 +403,10 @@ defineExpose({ load, save })
   background: linear-gradient(90deg, rgb(236 72 153 / 0.06), transparent);
 }
 
+.card-head.sky {
+  background: linear-gradient(90deg, rgb(14 165 233 / 0.06), transparent);
+}
+
 .card-head.violet {
   background: linear-gradient(90deg, rgb(139 92 246 / 0.06), transparent);
 }
@@ -379,7 +434,8 @@ defineExpose({ load, save })
 }
 
 .grid-2,
-.grid-3 {
+.grid-3,
+.grid-4 {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 1rem;
@@ -392,6 +448,16 @@ defineExpose({ load, save })
 
   .grid-3 {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .grid-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .grid-4 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
@@ -500,6 +566,10 @@ defineExpose({ load, save })
 
 .accent-pink {
   color: rgb(236 72 153);
+}
+
+.accent-sky {
+  color: rgb(14 165 233);
 }
 
 .accent-violet {

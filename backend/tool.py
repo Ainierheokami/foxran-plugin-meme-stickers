@@ -20,6 +20,8 @@ from app.message import ExtensionSegment, Image, MediaRef
 from app.tools.base import BaseTool, ToolInputSchema, ToolResult
 from app.tools.registry import ToolRegistry
 
+from .config import MemeStickerSendingConfig, load_config
+
 
 logger = setup_logger(__name__)
 
@@ -30,8 +32,6 @@ SEND_URL_PREFIX = "/api/stickers/send"
 IMAGE_TAG_RE = re.compile(
     r"\[image,\s*url=(?P<url>[^,\]\s]+?)(?:\s*,\s*summary=(?P<summary>\[[^\]]*\]|[^\]]+?))?\s*\]"
 )
-SEND_WEBP_MAX_SIZE = 384
-SEND_WEBP_QUALITY = 72
 MAX_STICKER_BYTES = 15 * 1024 * 1024
 
 
@@ -200,57 +200,95 @@ def _resolve_sticker_source_path(item: Dict[str, Any]) -> Optional[Path]:
     return None
 
 
-def _compress_image_bytes(content: bytes, max_size: int = SEND_WEBP_MAX_SIZE) -> Optional[bytes]:
+def _encode_webp(img: Any, side: int, quality: int, max_frames: int) -> Optional[bytes]:
+    from PIL import Image, ImageSequence
+
     try:
-        from PIL import Image, ImageSequence
+        resample = Image.Resampling.LANCZOS
+    except AttributeError:
+        resample = Image.LANCZOS
+    buffer = BytesIO()
+    if getattr(img, "is_animated", False):
+        frames = []
+        durations = []
+        for frame in ImageSequence.Iterator(img):
+            current = frame.convert("RGBA")
+            current.thumbnail((side, side), resample)
+            frames.append(current.copy())
+            durations.append(int(frame.info.get("duration", 90)))
+            if len(frames) >= max_frames:
+                break
+        if not frames:
+            return None
+        frames[0].save(
+            buffer,
+            format="WEBP",
+            save_all=True,
+            append_images=frames[1:],
+            duration=durations,
+            loop=0,
+            quality=quality,
+            method=6,
+        )
+        return buffer.getvalue()
+
+    still = img.copy()
+    still.thumbnail((side, side), resample)
+    if still.mode not in ("RGB", "RGBA"):
+        still = still.convert("RGBA")
+    still.save(buffer, format="WEBP", quality=quality, method=6)
+    return buffer.getvalue()
+
+
+def _compress_image_bytes(content: bytes, sending: Optional[MemeStickerSendingConfig] = None) -> Optional[bytes]:
+    """WebP send copy within ``sending``'s limits.
+
+    Over ``max_kb`` the quality steps down to 40 first, then the longest side
+    shrinks by 20% at a time (not below 64px); the smallest result is returned
+    even if it is still over the limit.
+    """
+    try:
+        from PIL import Image
     except Exception:
         return None
 
+    cfg = (sending or MemeStickerSendingConfig()).clamped()
+    limit = cfg.max_kb * 1024
     try:
         with Image.open(BytesIO(content)) as img:
-            try:
-                resample = Image.Resampling.LANCZOS
-            except AttributeError:
-                resample = Image.LANCZOS
-            if getattr(img, "is_animated", False):
-                frames = []
-                durations = []
-                for frame in ImageSequence.Iterator(img):
-                    current = frame.convert("RGBA")
-                    current.thumbnail((max_size, max_size), resample)
-                    frames.append(current.copy())
-                    durations.append(int(frame.info.get("duration", 90)))
-                    if len(frames) >= 48:
-                        break
-                if not frames:
-                    return None
-                buffer = BytesIO()
-                frames[0].save(
-                    buffer,
-                    format="WEBP",
-                    save_all=True,
-                    append_images=frames[1:],
-                    duration=durations,
-                    loop=0,
-                    quality=SEND_WEBP_QUALITY,
-                    method=6,
-                )
-                return buffer.getvalue()
-
-            img.thumbnail((max_size, max_size), resample)
-            if img.mode not in ("RGB", "RGBA"):
-                img = img.convert("RGBA")
-            buffer = BytesIO()
-            img.save(buffer, format="WEBP", quality=SEND_WEBP_QUALITY, method=6)
-            return buffer.getvalue()
+            side = min(cfg.max_side, max(img.size))
+            quality = cfg.quality
+            best: Optional[bytes] = None
+            while True:
+                encoded = _encode_webp(img, side, quality, cfg.max_frames)
+                if not encoded:
+                    return best
+                if best is None or len(encoded) < len(best):
+                    best = encoded
+                if not limit or len(encoded) <= limit:
+                    return encoded
+                if quality > 40:
+                    quality = max(40, quality - 12)
+                elif side > 64:
+                    side = max(64, int(side * 0.8))
+                else:
+                    logger.warning(f"表情包发送图压到最小仍有 {len(best) // 1024}KB，超过上限 {cfg.max_kb}KB")
+                    return best
     except Exception as e:
         logger.debug(f"表情包发送图压缩失败: {e}")
         return None
 
 
+def _send_profile(sending: MemeStickerSendingConfig) -> str:
+    cfg = sending.clamped()
+    return f"webp:{cfg.max_side}:{cfg.quality}:{cfg.max_kb}:{cfg.max_frames}"
+
+
 def _get_send_url(item: Dict[str, Any]) -> str:
+    sending = load_config().sending
+    profile = _send_profile(sending)
     cached_send_url = str(item.get("send_url") or "")
-    if cached_send_url:
+    if cached_send_url and item.get("send_profile") == profile:
         path, _kind = resolve_sticker_storage_url(cached_send_url)
         if path:
             return cached_send_url
@@ -264,7 +302,7 @@ def _get_send_url(item: Dict[str, Any]) -> str:
         return url
 
     content = source_path.read_bytes()
-    compressed = _compress_image_bytes(content)
+    compressed = _compress_image_bytes(content, sending)
     if not compressed:
         return url
 
@@ -277,6 +315,7 @@ def _get_send_url(item: Dict[str, Any]) -> str:
     item["send_url"] = send_url
     item["send_content_type"] = "image/webp"
     item["send_size"] = len(compressed)
+    item["send_profile"] = profile
     item["updated_at"] = _now()
     return send_url
 

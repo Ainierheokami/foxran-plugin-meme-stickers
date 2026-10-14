@@ -138,6 +138,12 @@ export type StickerConfig = {
     suggest_collect: boolean
     sticker_summary_keywords: string[]
   }
+  sending: {
+    max_side: number
+    quality: number
+    max_kb: number
+    max_frames: number
+  }
 }
 
 export async function getStickerConfig() {

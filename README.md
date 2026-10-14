@@ -26,12 +26,14 @@ python scripts/install_market_plugin.py https://github.com/Ainierheokami/foxran-
 
 ## 🖥 WebUI（表情包池）
 
-- **AI 生成表情包**面板：可以在“生成”和“复刻”之间切换，填写画面描述或修改要求、配字、情绪、标签。面板会显示绘图模型是否可用，以及今天已用的额度。
-- 每张卡片都有“复刻”按钮，点一下就把这张图设为参考图；也可以直接填参考图 URL。
-- 卡片会标出来源（上传、URL 导入、Agent 收集、AI 生成、AI 复刻），顶部可以按来源筛选。
-- 对应接口：`GET /api/stickers/generation/status`、`POST /api/stickers/generate`、`POST /api/stickers/{id}/remake`、`POST /api/stickers/remake`；`GET /api/stickers` 新增 `source` 参数。
+- 主区域是表情网格，顶部可以按文字、标签、情绪、来源和启用状态筛选。没有标注的卡片会显示“未标注”。
+- **添加表情包**弹窗：分“本地图片”和“图片链接”两页，可以统一填写说明、情绪和标签，导入前能预览，也能移除不要的图。在页面任意位置拖入图片，或者粘贴图片、图片链接，也会打开这个弹窗。
+- **AI 生成**弹窗：分“凭描述生成”和“照参考图复刻”两种模式，并显示绘图模型是否可用、今天已用的额度。
+- 点卡片会打开右侧的**详情抽屉**，在里面编辑说明、情绪和标签，启用或停用，用这张图复刻，对单张做 LLM 打标，或者删除。
+- 勾选卡片后，底部会出现**批量操作栏**：批量标注（追加或替换标签）、LLM 视觉打标（一次最多 12 张）、启用、停用、删除。已有选中时，点卡片会切换选中状态；按住 Ctrl、⌘ 或 Shift 点击也可以多选。
+- 提示和确认框使用宿主的 `window.Foxran.ui.toast` / `confirm`（宿主 4.4.0 及以上）；宿主更早的版本退回浏览器自带的提示。
 
-修改 `web/` 下的源码后，需要在 `web/` 目录执行 `npm install && npm run build` 重新生成 `index.umd.js`。
+修改 `web/` 下的源码后，需要在 `web/` 目录执行 `npm install && npm run build` 重新生成 `index.umd.js`（构建前会先跑 `vue-tsc` 类型检查，也可以单独运行 `npm run typecheck`）。
 
 ## ⚙️ 配置
 
@@ -42,5 +44,8 @@ python scripts/install_market_plugin.py https://github.com/Ainierheokami/foxran-
 | `prompt` | `always_show_capability`、`min_messages_between_prompts`、`cooldown_seconds`、`persist_until_sent`、`max_persistent_turns`、`allowed_platforms`、`blocked_keywords` |
 | `generation` | `enabled`、`style_prompt`、`size`、`max_per_day`、`hint_enabled` |
 | `collection` | `suggest_collect`、`sticker_summary_keywords` |
+| `sending` | `max_side`（最长边，默认 384px）、`quality`（默认 72）、`max_kb`（体积上限，默认 1024KB，0 表示不限制）、`max_frames`（动图帧数，默认 48） |
+
+发送时用的是压缩过的 WebP 副本，原图不变。副本超过 `max_kb` 时，先把质量降到 40，再每次把尺寸缩小 20%，直到不超过上限（最长边最小到 64px）。改了 `sending` 以后，每张表情会在下次发送时重新生成副本。只存了外部链接、没有本地文件的表情会原样发送。
 
 生成和复刻需要在 `models.yaml` 里配置带 `image_generation` / `image_edit` 标签的模型；没有可用模型时 prompt 里不会提到生成。
