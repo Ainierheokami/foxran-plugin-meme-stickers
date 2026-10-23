@@ -78,6 +78,7 @@ async def before_prompt_build(context_vars, session_ctx=None, current_message=No
         text=str(current_message.content or ""),
         summary=summary,
         can_draw=can_draw,
+        recent_texts=_recent_user_texts(session_ctx, current_message),
     )
     if not hints:
         return context_vars
@@ -91,6 +92,19 @@ async def before_prompt_build(context_vars, session_ctx=None, current_message=No
     plugin_hints.extend({"source": "meme_stickers", "text": hint} for hint in hints)
     context_vars["plugin_prompt_hints"] = plugin_hints
     return context_vars
+
+
+def _recent_user_texts(session_ctx, current_message) -> list:
+    """Earlier user messages, newest first: in group chats most stickers arrive on turns the agent skips."""
+    from .backend.prompt import RECENT_MESSAGES_FOR_COLLECT
+
+    history = list(getattr(session_ctx, "history", None) or [])[-RECENT_MESSAGES_FOR_COLLECT:]
+    current_id = getattr(current_message, "internal_id", None)
+    return [
+        str(message.content or "")
+        for message in reversed(history)
+        if getattr(message, "role", None) == "user" and getattr(message, "internal_id", None) != current_id
+    ]
 
 
 # Chat platforms fetch sticker images without logging in.

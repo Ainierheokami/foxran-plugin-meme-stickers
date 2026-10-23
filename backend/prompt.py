@@ -6,8 +6,9 @@ Three kinds of hint, from cheapest to strongest:
   the library holds, so the agent can send stickers on its own;
 * opportunity: on paced turns (spacing, cooldown, no serious keywords) a
   direct suggestion to attach one sticker this turn;
-* collect: when the user's message carries a sticker image, a suggestion to
-  save it with ``meme_sticker collect``.
+* collect: when the user's message, or a recent message the agent did not
+  answer, carries a sticker image, a suggestion to save it with
+  ``meme_sticker collect``.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ EMOTIONS = "happy、thanks、agree、tease、awkward、surprised、comfort、sor
 # Explicit asks for a sticker skip the pacing rules.
 REQUEST_PATTERNS = ("表情包", "发个表情", "来个表情", "来张表情", "斗图", "发张图", "sticker", "meme")
 MAX_COLLECT_HINTS_PER_SESSION = 30
+# 群聊里她不回的消息不会生成提示词，表情包只留在历史里；开口时回看这么多条
+RECENT_MESSAGES_FOR_COLLECT = 20
 
 _library_cache: Dict[str, Any] = {"mtime": None, "summary": None}
 
@@ -123,7 +126,7 @@ def opportunity_hint(summary: Dict[str, Any], *, requested: bool, can_draw: bool
 def collect_hint(images: List[Dict[str, str]]) -> str:
     refs = "\n".join(f"- url={image['url']} summary={image.get('summary') or '-'}" for image in images[:3])
     return (
-        "[表情包收集] 用户这条消息里有表情包：\n"
+        "[表情包收集] 这条消息或最近的聊天里有表情包：\n"
         f"{refs}\n"
         "如果它有趣、可复用且不含隐私（不是私人照片、证件、聊天截图），可以调用 meme_sticker operation=collect, "
         "url=上面的地址，并用你看到的画面填写 summary、emotion、tags 收进表情包库，以后斗图用；"
@@ -149,8 +152,13 @@ def build_hints(
     summary: Dict[str, Any],
     can_draw: bool,
     now: Optional[float] = None,
+    recent_texts: Iterable[str] = (),
 ) -> tuple[List[str], bool]:
     """Pick this turn's hints and advance the pacing state.
+
+    ``recent_texts`` are earlier user messages, newest first; stickers in them
+    are offered for collection too, but only this message's stickers invite a
+    sticker back.
 
     Returns ``(hints, needs_tool_schema)``; the schema is only needed when a
     hint asks the agent to call ``meme_sticker``.
@@ -159,10 +167,17 @@ def build_hints(
     hints: List[str] = []
     needs_tool = False
 
-    incoming = sticker_images(text, collection_cfg.sticker_summary_keywords)
+    keywords = collection_cfg.sticker_summary_keywords
+    incoming = sticker_images(text, keywords)
     if collection_cfg.suggest_collect:
         seen = state.setdefault("collect_hinted_urls", [])
-        fresh = [image for image in incoming if image["url"] not in seen]
+        candidates = incoming + [image for earlier in recent_texts for image in sticker_images(earlier, keywords)]
+        fresh: List[Dict[str, str]] = []
+        for image in candidates:
+            if image["url"] not in seen and all(image["url"] != item["url"] for item in fresh):
+                fresh.append(image)
+        # 一次只提 3 张，其余留到下一轮
+        fresh = fresh[:3]
         if fresh:
             hints.append(collect_hint(fresh))
             needs_tool = True

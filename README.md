@@ -21,7 +21,7 @@ python scripts/install_market_plugin.py https://github.com/Ainierheokami/foxran-
   - 每轮一句能力说明（库里有哪些情绪和标签），Agent 随时可以自己决定发不发；
   - 每隔 `min_messages_between_prompts` 条用户消息，且不在 `cooldown_seconds` 冷却中时，注入“这轮建议发一张”的机会提示；
   - 用户明确要表情包、或自己发来表情包时，不管间隔多少都会提示回一张；
-  - 用户发来表情包时提示 Agent 可以收进库；
+  - 用户发来表情包时提示 Agent 可以收进库；群聊里她没回的消息不会生成提示词，所以她开口时会回看最近 20 条用户消息，把没提过的表情包一并列出（每次最多 3 张）；
   - 消息命中 `blocked_keywords` 时完全不提示。
 
 ## 🖥 WebUI（表情包池）

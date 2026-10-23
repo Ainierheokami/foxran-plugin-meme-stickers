@@ -208,6 +208,46 @@ def test_incoming_sticker_suggests_collect_once_and_invites_a_reply():
     assert not any(hint.startswith("[表情包收集]") for hint in again)
 
 
+def _sticker(name):
+    return f"[image,url=https://q.qq.com/{name}.png, summary=[动画表情]]"
+
+
+def test_stickers_in_skipped_messages_are_offered_when_she_speaks():
+    # 群聊里她不回的消息不生成提示词，那些表情包以前从来没被提过
+    state = {}
+    recent = [f"哈哈{_sticker('b')}", "普通的话", f"{_sticker('a')}{_sticker('c')}", _sticker("d")]
+    build = lambda text, recent_texts: meme_prompt.build_hints(
+        prompt_cfg=_prompt_cfg(), collection_cfg=COLLECTION, state=state, text=text,
+        summary=LIBRARY, can_draw=False, now=1000, recent_texts=recent_texts,
+    )
+
+    first, needs_tool = build("你们在聊啥", recent)
+    collect = first[0]
+    assert collect.startswith("[表情包收集]") and needs_tool
+    assert [name for name in "abcd" if f"/{name}.png" in collect] == ["a", "b", "c"]
+    # 没来要表情包，也没发表情包，不算邀请斗图
+    assert not any("用户在要表情包" in hint for hint in first)
+
+    second, _ = build("嗯", recent)
+    assert "/d.png" in second[0] and "/a.png" not in second[0]
+    third, _ = build("嗯", recent)
+    assert not any(hint.startswith("[表情包收集]") for hint in third)
+
+
+def test_recent_user_texts_skip_the_current_message_and_bot_replies():
+    from types import SimpleNamespace as NS
+
+    import app.tools.plugins.meme_stickers as plugin
+
+    current = NS(role="user", internal_id="m3", content="现在")
+    history = [
+        NS(role="user", internal_id="m1", content="一"),
+        NS(role="assistant", internal_id="m2", content="她"),
+        current,
+    ]
+    assert plugin._recent_user_texts(NS(history=history), current) == ["一"]
+
+
 def test_empty_library_only_hints_when_drawing_is_possible():
     hints, needs_tool = meme_prompt.build_hints(
         prompt_cfg=_prompt_cfg(), collection_cfg=NO_COLLECT, state={}, text="嗨", summary=EMPTY, can_draw=False, now=1000
