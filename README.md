@@ -14,7 +14,7 @@ python scripts/install_market_plugin.py https://github.com/Ainierheokami/foxran-
 ## 📸 功能说明
 
 - **发表情包**：Agent 在回复里写 `[meme, emotion=happy, tags=开心]`，发送前插件会从库里挑最合适的一张换成图片。
-- **收集**：`meme_sticker operation=collect` 把聊天里的图片收进库。同一张图即使 URL 不同（QQ 每次都会换），也会按内容去重并合并标签。
+- **收集**：`meme_sticker operation=collect` 把聊天里的图片收进库。宿主 4.8.7 起插件启用时把 `meme_sticker` 登记为核心工具，模型随时能用，不靠向量检索拉起（稳定提示词约多 800 token，可缓存）；更早的宿主照旧靠检索和提示里附的工具说明。同一张图即使 URL 不同（QQ 每次都会换），也会按内容去重并合并标签。
 - **生成**：`meme_sticker operation=generate, prompt=画面描述, caption=配字` 调用带 `image_generation` 标签的模型画一张新表情包，自动入库，默认直接发送。
 - **复刻**：`meme_sticker operation=remake, url=参考图, prompt=修改要求` 调用带 `image_edit` 标签的模型重画已有表情包（例如“换成狐狸”）；不传 url 时使用最近一条消息里的图片。
 - **Prompt 节奏**：

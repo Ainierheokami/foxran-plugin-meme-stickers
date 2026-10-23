@@ -83,7 +83,7 @@ async def before_prompt_build(context_vars, session_ctx=None, current_message=No
     if not hints:
         return context_vars
 
-    if needs_tool:
+    if needs_tool and not _core_registered:
         hints.insert(0, prompt.tool_block(tool_instance))
     # Rendered by the host as <plugin-hints> inside the runtime <tools> block.
     plugin_hints = context_vars.get("plugin_prompt_hints")
@@ -107,12 +107,17 @@ def _recent_user_texts(session_ctx, current_message) -> list:
     ]
 
 
+# 登记为核心工具后，工具说明每轮都在，提示里不必再附一份
+_core_registered = False
+
+
 # Chat platforms fetch sticker images without logging in.
 PUBLIC_GET_PREFIXES = ("/api/stickers/assets/", "/api/stickers/send/", "/api/stickers/thumb/")
 
 
 def _register_hooks() -> None:
     """Register plugin callbacks idempotently."""
+    global _core_registered
     from app.api.public_paths import register_public_get_prefix
 
     for prefix in PUBLIC_GET_PREFIXES:
@@ -120,6 +125,13 @@ def _register_hooks() -> None:
     register_meme_segment()
     plugin_hooks.register("process_outbound_message_chain", process_outbound_message_chain)
     plugin_hooks.register("before_prompt_build", before_prompt_build)
+    # 收集、斗图要随时可用，不等向量检索碰巧拉起（宿主 4.8.7 起支持）
+    try:
+        from app.config.tool_config import register_core_tool
+    except ImportError:
+        return
+    register_core_tool("meme_sticker", owner=__name__)
+    _core_registered = True
 
 
 async def startup() -> None:
@@ -138,12 +150,20 @@ async def enable() -> None:
 
 async def disable() -> None:
     """Withdraw plugin callbacks without uninstalling plugin files."""
+    global _core_registered
     plugin_hooks.unregister("process_outbound_message_chain", process_outbound_message_chain)
     plugin_hooks.unregister("before_prompt_build", before_prompt_build)
     unregister_meme_segment()
     from app.api.public_paths import unregister_owner
 
     unregister_owner(__name__)
+    try:
+        from app.config.tool_config import unregister_core_tools
+    except ImportError:
+        pass
+    else:
+        unregister_core_tools(__name__)
+    _core_registered = False
     logger.info("Meme sticker plugin disabled")
 
 
