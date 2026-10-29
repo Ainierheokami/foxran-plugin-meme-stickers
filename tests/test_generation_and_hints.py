@@ -328,3 +328,25 @@ def test_migration_backfills_content_hash_so_old_stickers_dedupe(store):
     )
     assert not created
     assert len(meme_tool._load_library()["stickers"]) == 1
+
+
+def test_opportunity_hint_mentions_as_self_only_with_persona_images():
+    summary = {"count": 3, "emotions": ["happy"], "tags": ["开心"]}
+
+    with_self = meme_prompt.opportunity_hint(summary, requested=True, can_draw=True, can_draw_self=True)
+    without = meme_prompt.opportunity_hint(summary, requested=True, can_draw=True)
+
+    assert "as_self=true" in with_self
+    assert "as_self" not in without
+
+
+def test_persona_prompt_keeps_look_and_notes():
+    text = generation.build_sticker_prompt(
+        style_prompt="", description="比心", persona="狐狐", persona_notes=["正面立绘", ""],
+    )
+    remake = generation.build_sticker_prompt(
+        style_prompt="", description="", remake=True, persona="狐狐", persona_notes=[],
+    )
+
+    assert "「狐狐」的形象设定图" in text and "形象参考图说明：正面立绘。" in text
+    assert "把表情包里的主角换成这个角色" in remake

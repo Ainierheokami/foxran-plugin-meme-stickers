@@ -3,6 +3,7 @@
 Run from the Foxran host root: ``PYTHONPATH=. pytest app/tools/plugins/meme_stickers/tests``.
 """
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -29,7 +30,20 @@ def client(tmp_path, monkeypatch):
     app = FastAPI()
     app.include_router(meme_api.router)
     app.dependency_overrides[require_auth] = lambda: True
-    return TestClient(app)
+    # 绘图任务在后台跑，要整个测试共用一个事件循环
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def wait_job(client, response):
+    """POST 返回 202 + job，轮询到结束。"""
+    assert response.status_code == 202, response.text
+    job = response.json()["job"]
+    deadline = time.time() + 5
+    while job["status"] == "running" and time.time() < deadline:
+        time.sleep(0.02)
+        job = client.get(f"/api/stickers/jobs/{job['id']}").json()["job"]
+    return job
 
 
 def test_status_reports_models_and_quota(client):
@@ -42,6 +56,8 @@ def test_status_reports_models_and_quota(client):
         "used_today": 0,
         "max_per_day": 3,
         "size": "512x512",
+        "persona_roles": [],
+        "default_role": generation.DEFAULT_ROLE_ID,
     }
 
 
@@ -62,15 +78,15 @@ def test_generate_then_remake_by_id_and_filter_by_source(client, tmp_path, monke
     monkeypatch.setattr(generation, "draw_sticker", fake_draw)
     monkeypatch.setattr(generation, "redraw_sticker", fake_redraw)
 
-    made = client.post("/api/stickers/generate", json={"prompt": "开心的狐狸", "emotion": "happy", "tags": ["开心"]})
-    assert made.status_code == 200, made.text
-    original = made.json()["item"]
+    made = wait_job(client, client.post("/api/stickers/generate", json={"prompt": "开心的狐狸", "emotion": "happy", "tags": ["开心"]}))
+    assert made["status"] == "done", made
+    original = made["item"]
     assert original["source"] == "generated"
     assert original["thumb_url"].startswith("/api/stickers/thumb/assets/")
 
-    remade = client.post(f"/api/stickers/{original['id']}/remake", json={"prompt": "换成猫"})
-    assert remade.status_code == 200, remade.text
-    copy = remade.json()["item"]
+    remade = wait_job(client, client.post(f"/api/stickers/{original['id']}/remake", json={"prompt": "换成猫"}))
+    assert remade["status"] == "done", remade
+    copy = remade["item"]
     assert copy["source"] == "remade"
     assert copy["reference_id"] == original["id"]
     assert copy["emotion"] == "happy" and copy["tags"] == ["开心"]
@@ -90,11 +106,45 @@ def test_generate_errors_are_reported(client, monkeypatch):
         raise RuntimeError("no model")
 
     monkeypatch.setattr(generation, "draw_sticker", broken)
-    failed = client.post("/api/stickers/generate", json={"prompt": "x"})
-    assert failed.status_code == 502
-    assert "no model" in failed.json()["detail"]
+    failed = wait_job(client, client.post("/api/stickers/generate", json={"prompt": "x"}))
+    assert failed["status"] == "error"
+    assert "no model" in failed["error"]
 
     assert client.post("/api/stickers/nope/remake", json={}).status_code == 404
+    assert client.get("/api/stickers/jobs/nope").status_code == 404
+
+
+def test_as_self_without_persona_images_is_rejected(client, monkeypatch):
+    monkeypatch.setattr(generation, "persona_ref_count", lambda role_id: 0)
+
+    response = client.post("/api/stickers/generate", json={"prompt": "比心", "as_self": True})
+
+    assert response.status_code == 400
+    assert "形象参考图" in response.json()["detail"]
+
+
+def test_as_self_draws_from_persona_images(client, tmp_path, monkeypatch):
+    drawn = tmp_path / "self.png"
+    drawn.write_bytes(b"self")
+    seen = {}
+
+    async def fake_redraw(prompt, image_bytes, size, extra_images=None):
+        seen.update(prompt=prompt, image_bytes=image_bytes, extra=extra_images)
+        return str(drawn)
+
+    monkeypatch.setattr(generation, "persona_ref_count", lambda role_id: 2)
+    monkeypatch.setattr(generation, "load_persona_refs", lambda role_id: [
+        {"id": "a", "note": "正面立绘", "bytes": b"front"},
+        {"id": "b", "note": "", "bytes": b"side"},
+    ])
+    monkeypatch.setattr(generation, "redraw_sticker", fake_redraw)
+
+    job = wait_job(client, client.post("/api/stickers/generate", json={"prompt": "比心", "as_self": True, "role_id": "狐狐"}))
+
+    assert job["status"] == "done", job
+    assert seen["image_bytes"] == b"front" and seen["extra"] == [b"side"]
+    assert "狐狐" in seen["prompt"] and "正面立绘" in seen["prompt"]
+    assert "狐狐" in job["item"]["tags"]
 
 
 def test_upload_dedupes_by_content(client):

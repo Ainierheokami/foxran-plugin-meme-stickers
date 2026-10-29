@@ -71,6 +71,11 @@ async def before_prompt_build(context_vars, session_ctx=None, current_message=No
         return context_vars
 
     can_draw = meme_cfg.generation.hint_enabled and generation.generation_available()
+    can_draw_self = (
+        can_draw
+        and generation.model_available("image_edit")
+        and generation.persona_ref_count(generation.session_role_id(session_ctx)) > 0
+    )
     hints, needs_tool = prompt.build_hints(
         prompt_cfg=prompt_cfg,
         collection_cfg=meme_cfg.collection,
@@ -79,6 +84,7 @@ async def before_prompt_build(context_vars, session_ctx=None, current_message=No
         summary=summary,
         can_draw=can_draw,
         recent_texts=_recent_user_texts(session_ctx, current_message),
+        can_draw_self=can_draw_self,
     )
     if not hints:
         return context_vars

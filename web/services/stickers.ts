@@ -33,6 +33,9 @@ export type GenerationStatus = {
   used_today: number
   max_per_day: number
   size: string
+  /** 上传过形象参考图的人设（宿主 4.9.21 起） */
+  persona_roles?: Array<{ id: string; ref_count: number }>
+  default_role?: string
 }
 
 export type DrawPayload = {
@@ -41,6 +44,42 @@ export type DrawPayload = {
   summary?: string
   emotion?: string
   tags?: string[]
+  /** 照人设卡的形象参考图画该角色 */
+  as_self?: boolean
+  role_id?: string
+}
+
+export type DrawJob = {
+  id: string
+  status: 'running' | 'done' | 'error'
+  progress: number
+  message: string
+  item?: StickerItem
+  error?: string
+}
+
+export type DrawProgress = (job: DrawJob) => void
+
+const JOB_POLL_MS = 2000
+const JOB_TIMEOUT_MS = 10 * 60 * 1000
+
+/** 绘图在后台跑，轮询到画完；轮询时偶发的网络错误只重试，不算失败。 */
+async function waitForJob(job: DrawJob, onProgress?: DrawProgress): Promise<StickerItem> {
+  const deadline = Date.now() + JOB_TIMEOUT_MS
+  let current = job
+  while (current.status === 'running') {
+    onProgress?.(current)
+    if (Date.now() > deadline) throw new Error('绘图超时，稍后刷新表情包池看看是否已经画好')
+    await new Promise((resolve) => setTimeout(resolve, JOB_POLL_MS))
+    try {
+      const res = await api.get<{ job: DrawJob }>(`/stickers/jobs/${job.id}`)
+      current = res.data.job
+    } catch (e: any) {
+      if (e?.response?.status === 404) throw new Error('绘图任务丢失（后端可能重启过），稍后刷新看看')
+    }
+  }
+  if (current.status === 'error' || !current.item) throw new Error(current.error || '绘图失败')
+  return current.item
 }
 
 export async function listStickers(params: { q?: string; tag?: string; emotion?: string; source?: string; limit?: number }) {
@@ -103,17 +142,17 @@ export async function getGenerationStatus() {
   return res.data
 }
 
-export async function generateSticker(payload: DrawPayload) {
-  const res = await api.post<{ item: StickerItem }>('/stickers/generate', payload)
-  return res.data.item
+export async function generateSticker(payload: DrawPayload, onProgress?: DrawProgress) {
+  const res = await api.post<{ job: DrawJob }>('/stickers/generate', payload)
+  return waitForJob(res.data.job, onProgress)
 }
 
 /** Remake a library sticker (`id`) or any image URL (`url`). */
-export async function remakeSticker(reference: { id?: string; url?: string }, payload: DrawPayload) {
+export async function remakeSticker(reference: { id?: string; url?: string }, payload: DrawPayload, onProgress?: DrawProgress) {
   const res = reference.id
-    ? await api.post<{ item: StickerItem }>(`/stickers/${reference.id}/remake`, payload)
-    : await api.post<{ item: StickerItem }>('/stickers/remake', { ...payload, url: reference.url || '' })
-  return res.data.item
+    ? await api.post<{ job: DrawJob }>(`/stickers/${reference.id}/remake`, payload)
+    : await api.post<{ job: DrawJob }>('/stickers/remake', { ...payload, url: reference.url || '' })
+  return waitForJob(res.data.job, onProgress)
 }
 
 export type StickerConfig = {

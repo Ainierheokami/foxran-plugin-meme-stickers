@@ -5,6 +5,8 @@ import base64
 import json
 import mimetypes
 import re
+import time
+import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -20,6 +22,7 @@ from app.runtime.paths import STICKERS_DIR
 from . import generation
 from .config import MemeStickerConfig, load_config, save_config
 from .tool import (
+    check_draw_request,
     create_drawn_sticker,
     build_sticker_asset_url,
     build_sticker_send_url,
@@ -68,6 +71,8 @@ class StickerGenerateRequest(BaseModel):
     summary: str = ""
     emotion: str = ""
     tags: List[str] = Field(default_factory=list)
+    as_self: bool = Field(False, description="照人设卡的形象参考图画该角色。")
+    role_id: str = Field("", description="as_self 时用哪个人设；留空用默认人设。")
 
 
 class StickerRemakeRequest(StickerGenerateRequest):
@@ -286,9 +291,15 @@ async def get_sticker_thumb(kind: str, filename: str, size: int = Query(160, ge=
     if not path:
         raise HTTPException(status_code=404, detail="表情包素材不存在")
 
+    # 表情包页一次拉几十张缩略图，动图缩放很吃 CPU，放线程里别卡住整个网页
+    content = await asyncio.to_thread(_cached_sticker_thumb, path, size)
+    return Response(content=content, media_type="image/webp")
+
+
+def _cached_sticker_thumb(path: Path, size: int) -> bytes:
     thumb_file = _sticker_thumb_path(path, size)
     if thumb_file.exists():
-        return Response(content=thumb_file.read_bytes(), media_type="image/webp")
+        return thumb_file.read_bytes()
 
     content = _make_sticker_thumb(path, size)
     try:
@@ -296,7 +307,7 @@ async def get_sticker_thumb(kind: str, filename: str, size: int = Query(160, ge=
         thumb_file.write_bytes(content)
     except Exception as e:
         logger.debug(f"写入表情包缩略图缓存失败 {thumb_file}: {e}")
-    return Response(content=content, media_type="image/webp")
+    return content
 
 
 def _is_bad_auto_tag(suggestion: Dict[str, Any]) -> bool:
@@ -317,7 +328,7 @@ async def list_stickers(
     limit: int = 200,
     _: bool = Depends(require_auth),
 ):
-    library = _load_library()
+    library = await asyncio.to_thread(_load_library)
     items = list(library["stickers"])
     q_lower = q.strip().lower()
     tag_lower = tag.strip().lower()
@@ -376,47 +387,115 @@ async def update_sticker_config(payload: MemeStickerConfig, _: bool = Depends(re
     return {"status": "success", "config": saved.model_dump()}
 
 
-@router.get("/api/stickers/generation/status")
-async def get_generation_status(_: bool = Depends(require_auth)):
-    """What the WebUI generator can do right now: config switch, models and today's quota."""
+def _generation_status() -> Dict[str, Any]:
     cfg = generation.load_generation_config()
+    can_remake = cfg.enabled and generation.model_available("image_edit")
     return {
         "enabled": cfg.enabled,
         "can_generate": cfg.enabled and generation.model_available("image_generation"),
-        "can_remake": cfg.enabled and generation.model_available("image_edit"),
+        "can_remake": can_remake,
         "used_today": generation.generated_today(_load_library()["stickers"]),
         "max_per_day": cfg.max_per_day,
         "size": cfg.size,
+        # 照人设形象画走 image edit，所以同样要求有 image_edit 模型
+        "persona_roles": generation.persona_roles() if can_remake else [],
+        "default_role": generation.DEFAULT_ROLE_ID,
     }
 
 
-@router.post("/api/stickers/generate")
-async def generate_sticker(payload: StickerGenerateRequest, _: bool = Depends(require_auth)):
+@router.get("/api/stickers/generation/status")
+async def get_generation_status(_: bool = Depends(require_auth)):
+    """What the WebUI generator can do right now: config switch, models and today's quota."""
+    return await asyncio.to_thread(_generation_status)
+
+
+# 绘图一次要一两分钟。请求一直挂着的话，反向代理（nginx 默认 60 秒）会先断开、
+# 页面看到 502/504；所以生成在后台跑，接口立刻返回 job_id，前端轮询结果。
+_JOB_TTL_SECONDS = 30 * 60
+_jobs: Dict[str, Dict[str, Any]] = {}
+
+
+def _prune_jobs() -> None:
+    cutoff = time.time() - _JOB_TTL_SECONDS
+    for job_id in [job_id for job_id, job in _jobs.items() if job.get("finished_at", time.time()) < cutoff]:
+        _jobs.pop(job_id, None)
+
+
+async def _start_draw_job(kind: str, **kwargs: Any) -> Dict[str, Any]:
+    if kwargs.get("as_self") and not kwargs.get("role_id"):
+        kwargs["role_id"] = generation.DEFAULT_ROLE_ID
     try:
-        item = await create_drawn_sticker(
-            remake=False,
-            prompt=payload.prompt,
-            caption=payload.caption,
-            summary=payload.summary,
-            emotion=payload.emotion,
-            tags=payload.tags,
+        await asyncio.to_thread(
+            check_draw_request,
+            remake=kwargs["remake"],
+            reference_url=kwargs.get("reference_url", ""),
+            prompt=(kwargs.get("prompt") or kwargs.get("summary") or ""),
+            as_self=kwargs.get("as_self", False),
+            role_id=kwargs.get("role_id", ""),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.warning(f"表情包生成失败: {e}", exc_info=True)
-        raise HTTPException(status_code=502, detail=f"绘图模型调用失败: {e}")
-    return {"item": _decorate(item)}
+    _prune_jobs()
+    job_id = uuid.uuid4().hex[:16]
+    job: Dict[str, Any] = {"id": job_id, "kind": kind, "status": "running", "progress": 0, "message": "排队中", "started_at": time.time()}
+    _jobs[job_id] = job
+
+    async def progress(percent: int, message: str) -> None:
+        job["progress"] = percent
+        job["message"] = message
+
+    async def run() -> None:
+        try:
+            item = await create_drawn_sticker(progress=progress, **kwargs)
+            job.update(status="done", progress=100, message="完成", item=_decorate(item))
+        except ValueError as e:
+            job.update(status="error", error=str(e))
+        except Exception as e:
+            logger.warning(f"表情包{kind}失败: {e}", exc_info=True)
+            job.update(status="error", error=f"绘图模型调用失败: {e}")
+        finally:
+            job["finished_at"] = time.time()
+
+    job["task"] = asyncio.create_task(run())
+    return _public_job(job)
 
 
-@router.post("/api/stickers/remake")
+def _public_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in job.items() if key != "task"}
+
+
+@router.get("/api/stickers/jobs/{job_id}")
+async def get_draw_job(job_id: str, _: bool = Depends(require_auth)):
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    return {"job": _public_job(job)}
+
+
+@router.post("/api/stickers/generate", status_code=202)
+async def generate_sticker(payload: StickerGenerateRequest, _: bool = Depends(require_auth)):
+    return {"job": await _start_draw_job(
+        "生成",
+        remake=False,
+        prompt=payload.prompt,
+        caption=payload.caption,
+        summary=payload.summary,
+        emotion=payload.emotion,
+        tags=payload.tags,
+        as_self=payload.as_self,
+        role_id=payload.role_id.strip(),
+    )}
+
+
+@router.post("/api/stickers/remake", status_code=202)
 async def remake_sticker_from_url(payload: StickerRemakeRequest, _: bool = Depends(require_auth)):
     return await _remake(payload, reference_url=payload.url.strip())
 
 
-@router.post("/api/stickers/{sticker_id}/remake")
+@router.post("/api/stickers/{sticker_id}/remake", status_code=202)
 async def remake_sticker(sticker_id: str, payload: StickerRemakeRequest, _: bool = Depends(require_auth)):
-    reference = next((item for item in _load_library()["stickers"] if item.get("id") == sticker_id), None)
+    library = await asyncio.to_thread(_load_library)
+    reference = next((item for item in library["stickers"] if item.get("id") == sticker_id), None)
     if reference is None:
         raise HTTPException(status_code=404, detail="表情包不存在")
     return await _remake(payload, reference_url=str(reference.get("url") or ""), reference=reference)
@@ -429,24 +508,20 @@ async def _remake(
     reference: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     reference = reference or {}
-    try:
-        item = await create_drawn_sticker(
-            remake=True,
-            reference_url=reference_url,
-            reference_summary=str(reference.get("summary") or ""),
-            prompt=payload.prompt,
-            caption=payload.caption,
-            summary=payload.summary,
-            emotion=payload.emotion or str(reference.get("emotion") or ""),
-            tags=payload.tags or list(reference.get("tags") or []),
-            extra={"reference_id": reference["id"]} if reference.get("id") else None,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.warning(f"表情包复刻失败: {e}", exc_info=True)
-        raise HTTPException(status_code=502, detail=f"绘图模型调用失败: {e}")
-    return {"item": _decorate(item)}
+    return {"job": await _start_draw_job(
+        "复刻",
+        remake=True,
+        reference_url=reference_url,
+        reference_summary=str(reference.get("summary") or ""),
+        prompt=payload.prompt,
+        caption=payload.caption,
+        summary=payload.summary,
+        emotion=payload.emotion or str(reference.get("emotion") or ""),
+        tags=payload.tags or list(reference.get("tags") or []),
+        extra={"reference_id": reference["id"]} if reference.get("id") else None,
+        as_self=payload.as_self,
+        role_id=payload.role_id.strip(),
+    )}
 
 
 @router.post("/api/stickers")
@@ -514,7 +589,7 @@ async def update_sticker(sticker_id: str, payload: StickerUpdateRequest, _: bool
         raise HTTPException(status_code=404, detail="表情包不存在")
     if payload.url is not None:
         try:
-            stored = persist_sticker_source(payload.url.strip(), sticker_id=sticker_id)
+            stored = await asyncio.to_thread(persist_sticker_source, payload.url.strip(), sticker_id=sticker_id)
             item["url"] = stored["url"]
             item["storage_filename"] = stored["storage_filename"]
             item["content_type"] = stored["content_type"]
@@ -607,8 +682,9 @@ async def auto_tag_stickers(payload: StickerAutoTagRequest, _: bool = Depends(re
         }
     ]
     missing_images = []
-    for item in targets:
-        image_url = _image_url_for_vision(item)
+    # 本地图片要缩放并转 base64，十几张放线程里做
+    vision_urls = await asyncio.to_thread(lambda: [_image_url_for_vision(item) for item in targets])
+    for item, image_url in zip(targets, vision_urls):
         if not image_url:
             missing_images.append(str(item.get("id") or ""))
             continue

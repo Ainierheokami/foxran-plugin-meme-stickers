@@ -100,7 +100,7 @@ def capability_hint(summary: Dict[str, Any]) -> str:
     )
 
 
-def opportunity_hint(summary: Dict[str, Any], *, requested: bool, can_draw: bool) -> str:
+def opportunity_hint(summary: Dict[str, Any], *, requested: bool, can_draw: bool, can_draw_self: bool = False) -> str:
     lines = ["[表情包机会]"]
     if summary["count"]:
         if requested:
@@ -119,6 +119,11 @@ def opportunity_hint(summary: Dict[str, Any], *, requested: bool, can_draw: bool
             "库里没有贴切的图、或用户想要定制表情包时，可以调用 meme_sticker operation=generate"
             "（prompt=画面描述, caption=简短配字, emotion, tags）现画一张，画好会直接发送并入库；"
             "operation=remake 可以复刻/改画用户发来的表情包。绘图较慢，别每轮都画。"
+        )
+    if can_draw and can_draw_self:
+        lines.append(
+            "要画你自己（比如“画个你自己的表情包”、用你的形象复刻别人的梗图）时加 as_self=true，"
+            "会照你人设卡的形象参考图画，长得才是你。"
         )
     return "\n".join(lines)
 
@@ -153,6 +158,7 @@ def build_hints(
     can_draw: bool,
     now: Optional[float] = None,
     recent_texts: Iterable[str] = (),
+    can_draw_self: bool = False,
 ) -> tuple[List[str], bool]:
     """Pick this turn's hints and advance the pacing state.
 
@@ -217,7 +223,7 @@ def build_hints(
             opportunity = turns >= spacing and not cooling
 
     if opportunity:
-        hints.append(opportunity_hint(summary, requested=requested, can_draw=can_draw))
+        hints.append(opportunity_hint(summary, requested=requested, can_draw=can_draw, can_draw_self=can_draw_self))
         needs_tool = needs_tool or can_draw
         state["last_prompt_at"] = now
         if prompt_cfg.persist_until_sent:

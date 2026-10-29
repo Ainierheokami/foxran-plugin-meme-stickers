@@ -5,6 +5,7 @@ import hashlib
 import json
 import mimetypes
 import re
+import threading
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -33,6 +34,9 @@ IMAGE_TAG_RE = re.compile(
     r"\[image,\s*url=(?P<url>[^,\]\s]+?)(?:\s*,\s*summary=(?P<summary>\[[^\]]*\]|[^\]]+?))?\s*\]"
 )
 MAX_STICKER_BYTES = 15 * 1024 * 1024
+# Library reads and writes come from the event loop and from worker threads;
+# without the lock a reader can catch a half-written file and save an empty library.
+_LIBRARY_LOCK = threading.RLock()
 
 
 def _now() -> str:
@@ -43,7 +47,7 @@ def _load_library() -> Dict[str, Any]:
     if not LIBRARY_PATH.exists():
         return {"version": 1, "stickers": []}
     try:
-        with LIBRARY_PATH.open("r", encoding="utf-8") as f:
+        with _LIBRARY_LOCK, LIBRARY_PATH.open("r", encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict):
             return {"version": 1, "stickers": []}
@@ -59,8 +63,11 @@ def _load_library() -> Dict[str, Any]:
 
 def _save_library(data: Dict[str, Any]) -> None:
     LIBRARY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with LIBRARY_PATH.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    tmp = LIBRARY_PATH.with_suffix(".json.tmp")
+    with _LIBRARY_LOCK:
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        tmp.replace(LIBRARY_PATH)
 
 
 def _normalize_tags(tags: Optional[List[str]]) -> List[str]:
@@ -509,6 +516,39 @@ def _prepare_send_url(sticker_id: str) -> str:
     return send_url
 
 
+def check_draw_request(
+    *,
+    remake: bool,
+    reference_url: str = "",
+    prompt: str = "",
+    as_self: bool = False,
+    role_id: str = "",
+) -> None:
+    """Raise ``ValueError`` for a draw that cannot start: disabled, quota, missing prompt/reference/persona images.
+
+    Cheap (no model call); the WebUI runs it before queueing a background job
+    so these errors come back at once.
+    """
+    from . import generation
+
+    cfg = generation.load_generation_config()
+    if not cfg.enabled:
+        raise ValueError("表情包生成已在 meme_sticker.yaml 中关闭。")
+    if generation.daily_limit_reached(_load_library()["stickers"], cfg):
+        raise ValueError("今天生成表情包的次数已用完，请改用 select 从库里挑一张。")
+    if remake and not (reference_url or "").strip():
+        raise ValueError("remake 需要参考图：传入 url，或在最近消息里有图片。")
+    if not remake and not (prompt or "").strip():
+        raise ValueError("generate 需要 prompt（画面描述）。")
+    if as_self:
+        if not generation.persona_ref_count(role_id):
+            raise ValueError(
+                f"人设「{role_id}」还没有形象参考图，没法照着画她本人：先在 WebUI 人设页上传参考图，或者去掉 as_self 直接画。"
+            )
+        if not generation.model_available("image_edit"):
+            raise ValueError("照人设形象画需要带 image_edit 标签的绘图模型，models.yaml 里没有可用的。")
+
+
 async def create_drawn_sticker(
     *,
     remake: bool,
@@ -522,29 +562,41 @@ async def create_drawn_sticker(
     session_ctx: Any = None,
     progress: Any = None,
     extra: Optional[Dict[str, Any]] = None,
+    as_self: bool = False,
+    role_id: str = "",
 ) -> Dict[str, Any]:
     """Draw (``remake=False``) or redraw a reference sticker and add it to the library.
 
     Shared by the ``generate``/``remake`` tool operations and the WebUI API.
+    With ``as_self`` the persona's reference images (uploaded on the WebUI
+    persona page) go to the image edit model so the sticker shows the
+    character herself; ``role_id`` defaults to the session's role.
     Raises ``ValueError`` for anything the caller can fix (disabled, quota,
-    missing prompt or reference).
+    missing prompt, reference or persona images).
     """
     from . import generation
 
     cfg = generation.load_generation_config()
-    if not cfg.enabled:
-        raise ValueError("表情包生成已在 meme_sticker.yaml 中关闭。")
-    if generation.daily_limit_reached(_load_library()["stickers"], cfg):
-        raise ValueError("今天生成表情包的次数已用完，请改用 select 从库里挑一张。")
-
     prompt = (prompt or "").strip()
     caption = (caption or "").strip()
     summary = (summary or "").strip()
     reference_url = (reference_url or "").strip()
-    if remake and not reference_url:
-        raise ValueError("remake 需要参考图：传入 url，或在最近消息里有图片。")
-    if not remake and not (prompt or summary):
-        raise ValueError("generate 需要 prompt（画面描述）。")
+    if as_self:
+        role_id = role_id or generation.session_role_id(session_ctx)
+    await asyncio.to_thread(
+        check_draw_request,
+        remake=remake,
+        reference_url=reference_url,
+        prompt=prompt or summary,
+        as_self=as_self,
+        role_id=role_id,
+    )
+
+    persona_refs: List[Dict[str, Any]] = []
+    if as_self:
+        persona_refs = await asyncio.to_thread(generation.load_persona_refs, role_id)
+        if not persona_refs:
+            raise ValueError(f"人设「{role_id}」的形象参考图读取失败。")
 
     full_prompt = generation.build_sticker_prompt(
         style_prompt=cfg.style_prompt,
@@ -553,6 +605,8 @@ async def create_drawn_sticker(
         emotion=(emotion or "").strip(),
         reference_summary=(reference_summary or "").strip("[] "),
         remake=remake,
+        persona=role_id if persona_refs else "",
+        persona_notes=[ref["note"] for ref in persona_refs],
     )
 
     async def report(percent: int, message: str) -> None:
@@ -560,18 +614,30 @@ async def create_drawn_sticker(
             await progress(percent, message)
 
     await report(10, "正在绘制表情包...")
+    persona_images = [ref["bytes"] for ref in persona_refs]
     if remake:
         reference, _type, _name = await asyncio.to_thread(_read_sticker_source, reference_url)
-        image_url = await generation.redraw_sticker(full_prompt, reference, cfg.size)
+        if persona_images:
+            image_url = await generation.redraw_sticker(full_prompt, reference, cfg.size, extra_images=persona_images)
+        else:
+            image_url = await generation.redraw_sticker(full_prompt, reference, cfg.size)
+    elif persona_images:
+        image_url = await generation.redraw_sticker(
+            full_prompt, persona_images[0], cfg.size, extra_images=persona_images[1:]
+        )
     else:
         image_url = await generation.draw_sticker(full_prompt, cfg.size)
     await report(80, "正在存入表情包库...")
 
     content, content_type, original_filename = await asyncio.to_thread(_read_sticker_source, image_url)
-    metadata = {"prompt": full_prompt}
+    metadata: Dict[str, Any] = {"prompt": full_prompt}
     if remake:
         metadata["reference_url"] = reference_url
+    if persona_refs:
+        metadata["persona_role"] = role_id
+        metadata["persona_ref_ids"] = [ref["id"] for ref in persona_refs]
     metadata.update(extra or {})
+    tag_list = list(tags or []) + ([caption] if caption else []) + ([role_id] if persona_refs else [])
     item, _created = await asyncio.to_thread(
         _store_sticker,
         content,
@@ -580,7 +646,7 @@ async def create_drawn_sticker(
         source_url="",
         summary=summary or caption or prompt[:40] or (reference_summary or "").strip("[] ") or "表情包",
         emotion=emotion,
-        tags=list(tags or []) + ([caption] if caption else []),
+        tags=tag_list,
         source="remade" if remake else "generated",
         session_ctx=session_ctx,
         extra=metadata,
@@ -619,13 +685,21 @@ class StickerPackInput(ToolInputSchema):
         True,
         description="select/generate/remake 时是否把图片直接发给用户；为 false 时只入库或只返回候选说明。",
     )
+    as_self: bool = Field(
+        False,
+        description=(
+            "generate/remake 时画你自己：照你人设卡的形象参考图画，保证长得是你本人。"
+            "remake 加 as_self 会把参考表情包的主角换成你。画别人或通用画面时不要加。"
+        ),
+    )
 
 
 class MemeStickerTool(BaseTool):
     name: str = "meme_sticker"
     description: str = (
         "管理、收集和生成聊天表情包。可把聊天里别人发的表情包收进库（collect），按语境/情绪/标签从库里挑一张（select），"
-        "库里没有合适的时用绘图模型现画一张（generate）或复刻别人的表情包（remake）。"
+        "库里没有合适的时用绘图模型现画一张（generate）或复刻别人的表情包（remake）；"
+        "画你自己时加 as_self=true，会照你的人设形象参考图画。"
         "日常发表情包更推荐直接在回复里写 [meme, emotion=..., tags=...] 片段。"
     )
     usage: str = (
@@ -668,13 +742,13 @@ class MemeStickerTool(BaseTool):
             elif args.operation in ("generate", "remake"):
                 data = await self._draw(args, session_ctx, status_callback)
             elif args.operation == "select":
-                data = self._select(args, session_ctx)
+                data = await asyncio.to_thread(self._select, args, session_ctx)
             elif args.operation == "list":
-                data = self._list(args)
+                data = await asyncio.to_thread(self._list, args)
             elif args.operation == "delete":
-                data = self._delete(args)
+                data = await asyncio.to_thread(self._delete, args)
             elif args.operation == "update":
-                data = self._update(args)
+                data = await asyncio.to_thread(self._update, args)
             else:
                 return ToolResult(tool_name=self.name, success=False, error="未知操作", parameters=kwargs)
             return ToolResult(tool_name=self.name, success=True, data=data, parameters=kwargs)
@@ -733,6 +807,7 @@ class MemeStickerTool(BaseTool):
             tags=args.tags,
             session_ctx=session_ctx,
             progress=progress,
+            as_self=args.as_self,
         )
         if not args.allow_send:
             return f"已生成并收进表情包库 {item['id']}：{item['summary']}"

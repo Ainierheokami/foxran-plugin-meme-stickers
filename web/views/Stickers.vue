@@ -190,7 +190,7 @@
     </StickerSheet>
 
     <!-- AI 生成 / 复刻 -->
-    <StickerSheet :open="drawDialog" title="AI 生成表情包" width="36rem" :locked="drawing" @close="drawDialog = false">
+    <StickerSheet :open="drawDialog" title="AI 生成表情包" width="36rem" @close="drawDialog = false">
       <div class="tabs" role="tablist">
         <button v-for="mode in drawModes" :key="mode.value" :class="{ active: drawForm.mode === mode.value }" @click="drawForm.mode = mode.value">
           <component :is="mode.icon" class="i4" />{{ mode.label }}
@@ -239,14 +239,28 @@
             <input v-model="drawForm.tags" class="field" placeholder="逗号分隔" />
           </label>
         </div>
+        <div class="persona-row">
+          <label class="persona-check" :class="{ muted: !personaRoles.length }">
+            <input v-model="drawForm.asSelf" type="checkbox" :disabled="!personaRoles.length" />
+            <span>{{ drawForm.mode === 'generate' ? '画人设角色本人' : '主角换成人设角色' }}</span>
+          </label>
+          <select v-if="drawForm.asSelf && personaRoles.length > 1" v-model="drawForm.roleId" class="field persona-select">
+            <option v-for="role in personaRoles" :key="role.id" :value="role.id">{{ role.id }}（{{ role.ref_count }} 张）</option>
+          </select>
+          <span class="hint">
+            {{ personaRoles.length
+              ? '照人设卡的形象参考图画，外貌和她本人一致'
+              : '先在「Agent 人设」页给角色上传形象参考图（需要 image_edit 模型）' }}
+          </span>
+        </div>
         <div v-if="drawing" class="progress-note">
           <div class="progress"><span /></div>
-          绘图模型正在作画，通常需要几十秒；画好后会自动存进表情包池。
+          {{ drawMessage || '绘图模型正在作画' }}，通常需要几十秒到两分钟；可以关掉这个窗口，画好后会自动存进表情包池。
         </div>
       </div>
 
       <template #footer>
-        <button class="btn-secondary h-9" :disabled="drawing" @click="drawDialog = false">取消</button>
+        <button class="btn-secondary h-9" @click="drawDialog = false">{{ drawing ? '后台继续画' : '取消' }}</button>
         <button class="btn-primary h-9" :disabled="!canDraw" @click="drawSticker">
           <Loader2 v-if="drawing" class="i4 spinning" />
           <Wand v-else class="i4" />
@@ -404,6 +418,7 @@ import {
   remakeSticker,
   updateSticker,
   uploadStickers,
+  type DrawJob,
   type GenerationStatus,
   type StickerItem,
 } from '../services/stickers'
@@ -927,9 +942,13 @@ const drawForm = reactive({
   tags: '',
   reference: null as StickerItem | null,
   referenceUrl: '',
+  asSelf: false,
+  roleId: '',
 })
 const generationStatus = ref<GenerationStatus | null>(null)
 const drawing = ref(false)
+const drawMessage = ref('')
+const personaRoles = computed(() => generationStatus.value?.persona_roles || [])
 
 const quotaLeft = computed(() => {
   const status = generationStatus.value
@@ -940,7 +959,8 @@ const quotaLeft = computed(() => {
 const modeAvailable = computed(() => {
   const status = generationStatus.value
   if (!status) return false
-  return drawForm.mode === 'generate' ? status.can_generate : status.can_remake
+  // 照人设形象画走 image edit
+  return drawForm.mode === 'generate' && !drawForm.asSelf ? status.can_generate : status.can_remake
 })
 
 const statusText = computed(() => {
@@ -948,7 +968,7 @@ const statusText = computed(() => {
   if (!status) return '正在检查绘图模型...'
   if (!status.enabled) return '已在表情包设置中关闭生成'
   if (!modeAvailable.value) {
-    return drawForm.mode === 'generate' ? '没有可用的 image_generation 模型' : '没有可用的 image_edit 模型'
+    return drawForm.mode === 'generate' && !drawForm.asSelf ? '没有可用的 image_generation 模型' : '没有可用的 image_edit 模型'
   }
   if (quotaLeft.value <= 0) return `今日额度已用完（${status.used_today}/${status.max_per_day}）`
   const quota = status.max_per_day ? `今日 ${status.used_today}/${status.max_per_day}` : `今日已生成 ${status.used_today}`
@@ -964,6 +984,12 @@ const canDraw = computed(() => {
 async function fetchGenerationStatus() {
   try {
     generationStatus.value = await getGenerationStatus()
+    const roles = generationStatus.value.persona_roles || []
+    if (!roles.some((role) => role.id === drawForm.roleId)) {
+      const preferred = roles.find((role) => role.id === generationStatus.value?.default_role)
+      drawForm.roleId = (preferred || roles[0])?.id || ''
+    }
+    if (!roles.length) drawForm.asSelf = false
   } catch (e) {
     generationStatus.value = null
   }
@@ -992,13 +1018,18 @@ async function drawSticker() {
     caption: drawForm.caption.trim(),
     emotion: drawForm.emotion.trim(),
     tags: parseTags(drawForm.tags),
+    as_self: drawForm.asSelf,
+    role_id: drawForm.asSelf ? drawForm.roleId : '',
   }
+  drawMessage.value = ''
+  const onProgress = (job: DrawJob) => { drawMessage.value = job.message }
   try {
     const item = mode === 'generate'
-      ? await generateSticker(payload)
+      ? await generateSticker(payload, onProgress)
       : await remakeSticker(
         drawForm.reference ? { id: drawForm.reference.id } : { url: drawForm.referenceUrl.trim() },
         payload,
+        onProgress,
       )
     freshId.value = item.id
     drawForm.prompt = ''
@@ -1007,7 +1038,7 @@ async function drawSticker() {
     await Promise.all([fetchStickers(), fetchGenerationStatus()])
     toast.success(mode === 'generate' ? '已生成表情包并存入池子' : '已复刻表情包并存入池子')
   } catch (e: any) {
-    toast.error(e?.response?.data?.detail || (mode === 'generate' ? '生成失败' : '复刻失败'))
+    toast.error(e?.response?.data?.detail || e?.message || (mode === 'generate' ? '生成失败' : '复刻失败'))
   } finally {
     drawing.value = false
   }
@@ -1692,6 +1723,21 @@ onBeforeUnmount(() => {
   background: hsl(var(--muted));
 }
 
+.persona-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+.persona-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+.persona-check.muted { opacity: 0.6; cursor: not-allowed; }
+.persona-select { width: auto; min-width: 9rem; height: 2rem; }
 .progress-note {
   display: flex;
   flex-direction: column;
