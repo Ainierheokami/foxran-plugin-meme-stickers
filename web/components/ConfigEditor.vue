@@ -133,6 +133,26 @@
               </label>
             </div>
 
+            <div class="grid-3">
+              <label class="toggle">
+                <input v-model="config.collection.compress" type="checkbox" />
+                <span>
+                  <b>收进库时压缩</b>
+                  <small>大图缩成 WebP 再存，动图保留动画；小图原样存。</small>
+                </span>
+              </label>
+              <label class="field-label">
+                <span>压缩后最长边</span>
+                <input v-model.number="config.collection.max_side" class="field" type="number" min="128" max="2048" :disabled="!config.collection.compress" />
+                <small>像素，128~2048。</small>
+              </label>
+              <label class="field-label">
+                <span>超过多大才压缩</span>
+                <input v-model.number="config.collection.max_kb" class="field" type="number" min="64" :disabled="!config.collection.compress" />
+                <small>KB；压完还超就继续缩小尺寸。</small>
+              </label>
+            </div>
+
           </div>
         </section>
 
@@ -198,7 +218,7 @@ function defaultConfig(): StickerConfig {
       blocked_keywords: [],
     },
     generation: { enabled: true, style_prompt: '', size: '1024x1024', max_per_day: 20, hint_enabled: true },
-    collection: { suggest_collect: true, sticker_summary_keywords: [] },
+    collection: { suggest_collect: true, sticker_summary_keywords: [], compress: true, max_side: 512, max_kb: 2048 },
     sending: { max_side: 384, quality: 72, max_kb: 1024, max_frames: 48 },
   }
 }
@@ -282,6 +302,9 @@ async function save() {
     collection: {
       suggest_collect: Boolean(collection.suggest_collect),
       sticker_summary_keywords: textToList(text.stickerSummaryKeywords),
+      compress: Boolean(collection.compress),
+      max_side: clamp(collection.max_side, 128, 2048, 512),
+      max_kb: clamp(collection.max_kb, 64, 1048576, 2048),
     },
     sending: {
       max_side: clamp(sending.max_side, 64, 2048, 384),

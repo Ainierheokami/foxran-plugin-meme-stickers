@@ -226,3 +226,34 @@ def test_a_big_animation_from_the_media_cache_is_shrunk_into_the_library(tmp_pat
     assert len(content) <= meme_tool.MAX_STICKER_BYTES
     with PILImage.open(io.BytesIO(content)) as stored:
         assert stored.n_frames == 3 and max(stored.size) <= 512
+
+
+def test_collect_compression_follows_the_settings(monkeypatch):
+    import io
+    import os
+
+    from PIL import Image as PILImage
+
+    from app.tools.plugins.meme_stickers.backend import config as meme_config
+
+    frames = [PILImage.frombytes("RGB", (800, 800), os.urandom(800 * 800 * 3)) for _ in range(2)]
+    buffer = io.BytesIO()
+    frames[0].save(buffer, format="GIF", save_all=True, append_images=frames[1:], duration=80, loop=0)
+    gif = buffer.getvalue()
+
+    def settings(**collection):
+        cfg = meme_config.MemeStickerConfig()
+        cfg.collection = cfg.collection.model_copy(update=collection)
+        monkeypatch.setattr(meme_tool, "load_config", lambda: cfg)
+
+    settings(compress=True, max_side=300, max_kb=64)
+    content, content_type, _ = meme_tool._fit_library(gif, "image/gif", "a.gif")
+    assert content_type == "image/webp"
+    with PILImage.open(io.BytesIO(content)) as stored:
+        assert stored.n_frames == 2 and max(stored.size) <= 300
+
+    # 小图、或者关掉压缩时原样存
+    settings(compress=True, max_kb=len(gif) // 1024 + 1)
+    assert meme_tool._fit_library(gif, "image/gif", "a.gif")[0] is gif
+    settings(compress=False)
+    assert meme_tool._fit_library(gif, "image/gif", "a.gif")[0] is gif

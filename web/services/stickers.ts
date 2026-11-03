@@ -176,6 +176,9 @@ export type StickerConfig = {
   collection: {
     suggest_collect: boolean
     sticker_summary_keywords: string[]
+    compress: boolean
+    max_side: number
+    max_kb: number
   }
   sending: {
     max_side: number

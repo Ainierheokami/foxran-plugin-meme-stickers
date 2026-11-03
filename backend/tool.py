@@ -34,10 +34,10 @@ IMAGE_TAG_RE = re.compile(
     r"\[image,\s*url=(?P<url>[^,\]\s]+?)(?:\s*,\s*summary=(?P<summary>\[[^\]]*\]|[^\]]+?))?\s*\]"
 )
 MAX_STICKER_BYTES = 15 * 1024 * 1024
-# 收进库之前能读多大的原图：超过 MAX_STICKER_BYTES 的动图（video_gen 出的 GIF 常有二三十 MB）
-# 先缩成 WebP 再存，不直接拒收。
+# 收进库之前能读多大的原图：大图按 collection 配置缩成 WebP 再存（video_gen 出的 GIF 常有二三十 MB），
+# 不直接拒收。
 MAX_SOURCE_BYTES = 80 * 1024 * 1024
-_LIBRARY_SIDES = (512, 400, 320, 256)
+_FALLBACK_SIDE = 512
 _LIBRARY_QUALITY = 80
 _LIBRARY_MAX_FRAMES = 240
 # 收藏时同步压缩：WebP 最慢档 120 帧要三四分钟，用快档。
@@ -140,21 +140,36 @@ def _local_media_cache_path(url: str) -> Optional[Path]:
 
 
 def _fit_library(content: bytes, content_type: str, filename: str) -> tuple[bytes, str, str]:
-    """超过库上限的图缩成 WebP（动图保留动画）；缩不下来才报过大。"""
-    if len(content) <= MAX_STICKER_BYTES:
+    """收进库前按 collection 配置压缩：超过 max_kb 的图缩成 WebP（动图保留动画）。
+
+    压缩关掉时只有超过库上限（15MB）才缩；缩完还超上限才报过大。
+    """
+    cfg = load_config().collection
+    target = min(max(int(cfg.max_kb), 64) * 1024, MAX_STICKER_BYTES) if cfg.compress else MAX_STICKER_BYTES
+    if len(content) <= target:
         return content, content_type, filename
+    side = min(max(int(cfg.max_side), 128), 2048) if cfg.compress else _FALLBACK_SIDE
+    best: Optional[bytes] = None
     try:
         from PIL import Image
 
         with Image.open(BytesIO(content)) as img:
-            for side in _LIBRARY_SIDES:
-                encoded = _encode_webp(img, min(side, max(img.size)), _LIBRARY_QUALITY, _LIBRARY_MAX_FRAMES, _LIBRARY_METHOD)
-                if encoded and len(encoded) <= MAX_STICKER_BYTES:
-                    logger.info(f"表情包原图 {len(content) // 1024}KB 超过库上限，缩成 {side}px WebP {len(encoded) // 1024}KB 再存")
-                    return encoded, "image/webp", f"{Path(filename).stem or 'sticker'}.webp"
+            side = min(side, max(img.size))
+            while True:
+                encoded = _encode_webp(img, side, _LIBRARY_QUALITY, _LIBRARY_MAX_FRAMES, _LIBRARY_METHOD)
+                if encoded and (best is None or len(encoded) < len(best)):
+                    best = encoded
+                if (encoded and len(encoded) <= target) or side <= 128:
+                    break
+                side = max(128, int(side * 0.8))
     except Exception as e:
         logger.debug(f"表情包缩小失败: {e}")
-    raise ValueError("表情包文件过大")
+    if best is not None and len(best) < len(content) and len(best) <= MAX_STICKER_BYTES:
+        logger.info(f"表情包原图 {len(content) // 1024}KB 收进库前缩成 {side}px WebP {len(best) // 1024}KB")
+        return best, "image/webp", f"{Path(filename).stem or 'sticker'}.webp"
+    if len(content) > MAX_STICKER_BYTES:
+        raise ValueError("表情包文件过大")
+    return content, content_type, filename
 
 
 def _read_sticker_source(url: str) -> tuple[bytes, str, str]:

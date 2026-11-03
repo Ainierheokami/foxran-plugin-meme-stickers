@@ -70,6 +70,9 @@ class MemeStickerCollectionConfig(BaseModel):
         default_factory=lambda: ["表情", "sticker", "meme", "emoji"],
         description="图片 summary 包含这些词时视为表情包（QQ 表情一般是 [动画表情]）。",
     )
+    compress: bool = Field(True, description="收进库时压缩：超过下面体积的图缩成 WebP 再存（动图保留动画），小图原样存。")
+    max_side: int = Field(512, description="压缩后的最长边（像素），范围 128~2048。")
+    max_kb: int = Field(2048, description="超过这个体积（KB）才压缩；压完还超就继续缩小尺寸。")
 
 
 class MemeStickerSendingConfig(BaseModel):
@@ -208,6 +211,12 @@ def render_config_yaml(config: MemeStickerConfig) -> str:
         "  # 图片 summary 包含这些词时视为表情包（QQ 表情一般是 [动画表情]）。\n"
         "  sticker_summary_keywords:\n"
         f"{_render_string_list(collection.sticker_summary_keywords, 4)}\n"
+        "  # 收进库时压缩：超过 max_kb 的图缩成 WebP 再存（动图保留动画），小图原样存。\n"
+        f"  compress: {str(collection.compress).lower()}\n\n"
+        "  # 压缩后的最长边（像素），范围 128~2048。\n"
+        f"  max_side: {collection.max_side}\n\n"
+        "  # 超过这个体积（KB）才压缩；压完还超就继续缩小尺寸。\n"
+        f"  max_kb: {collection.max_kb}\n\n"
         "sending:\n"
         "  # 发出去的是按下面设置压缩过的 WebP 副本，库里的原图不变；修改后下次发送时重新生成。\n"
         "  # 发送图最长边（像素），范围 64~2048。\n"
