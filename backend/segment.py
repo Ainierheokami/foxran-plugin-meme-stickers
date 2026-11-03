@@ -16,7 +16,7 @@ from app.message.registry import register_segment_type
 MEME_SEGMENT_TYPE = "meme_stickers.meme"
 MEME_TAG = "meme"
 MEME_FALLBACK_TEXT = "[表情包]"
-_SELECTOR_KEYS = ("id", "emotion", "tags", "summary", "query")
+_SELECTOR_KEYS = ("id", "emotion", "tags", "summary", "query", "url")
 
 
 def normalize_meme_tags(tags: Optional[Union[str, Iterable[str]]]) -> list[str]:
@@ -41,6 +41,7 @@ def make_meme_segment(
     tags: Optional[Union[str, Iterable[str]]] = None,
     summary: Optional[str] = None,
     query: Optional[str] = None,
+    url: Optional[str] = None,
 ) -> ExtensionSegment:
     data: dict[str, Any] = {}
     if id is not None and str(id).strip():
@@ -54,6 +55,8 @@ def make_meme_segment(
         data["summary"] = str(summary).strip()
     if query:
         data["query"] = str(query).strip()
+    if url and str(url).strip():
+        data["url"] = str(url).strip()
     return ExtensionSegment(type=MEME_SEGMENT_TYPE, data=data, fallback_text=MEME_FALLBACK_TEXT)
 
 
@@ -98,6 +101,7 @@ def parse_meme_tag(params_str: str) -> Optional[ExtensionSegment]:
         tags=params.get("tags") or [],
         summary=params.get("summary"),
         query=params.get("query"),
+        url=params.get("url"),
     )
     return segment if has_selector(segment) else None
 
@@ -115,7 +119,15 @@ def render_meme_tag(segment: ExtensionSegment) -> str:
         params.append(f"summary={data['summary']}")
     if data.get("query"):
         params.append(f"query={data['query']}")
+    if data.get("url"):
+        params.append(f"url={data['url']}")
     return f"[meme, {', '.join(params)}]" if params else "[meme]"
+
+
+def sent_meme_tag(sticker_id: str, summary: str, url: str) -> str:
+    """How a sticker she sent reads in history: the meme tag, plus the image url for other tools."""
+    clean_summary = " ".join(str(summary or "").replace("[", "（").replace("]", "）").replace(",", "，").split())
+    return render_meme_tag(make_meme_segment(id=sticker_id or None, summary=clean_summary or None, url=url or None))
 
 
 def meme_fallback(segment: ExtensionSegment) -> list[Segment]:

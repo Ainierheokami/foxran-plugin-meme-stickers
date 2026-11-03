@@ -110,7 +110,11 @@ def opportunity_hint(summary: Dict[str, Any], *, requested: bool, can_draw: bool
                 "这轮气氛适合发表情包：请在文字回复后附 1 个 `[meme, ...]` 片段，"
                 "只有内容严肃、用户情绪低落或文字里已经发过图时才省略。"
             )
-        lines.append("格式：`[meme, emotion=thanks, tags=感谢,捧场]` 或 `[meme, query=当前语境和想表达的语气]`。")
+        lines.append(
+            "格式：`[meme, emotion=thanks, tags=感谢,捧场]` 或 `[meme, query=当前语境和想表达的语气]`；"
+            "tags 用逗号隔开，不要写成 [\"a\",\"b\"] 列表，标记名是 meme 不是 image。"
+            "想再发历史里某张，照抄它的 `[meme, id=...]`；要拿它做图生图、看图，就用它的 url。"
+        )
         lines.append(f"emotion 可用：{EMOTIONS}；尽量用库里已有的情绪和标签。")
     else:
         lines.append("表情包库还是空的，暂时不能用 `[meme, ...]`。")

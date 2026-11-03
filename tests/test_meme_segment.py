@@ -257,3 +257,30 @@ def test_collect_compression_follows_the_settings(monkeypatch):
     assert meme_tool._fit_library(gif, "image/gif", "a.gif")[0] is gif
     settings(compress=False)
     assert meme_tool._fit_library(gif, "image/gif", "a.gif")[0] is gif
+
+
+def test_sent_sticker_reads_as_its_meme_tag_with_url(registered, library):
+    image = meme_tool.resolve_meme_segment(meme_segment.make_meme_segment(emotion="happy", tags=["捧场"]))
+    assert image.media.url == "/api/stickers/assets/HAPPY01.png"
+    assert tag_codec.render(image) == "[meme, id=happy01, summary=happy nod, url=/api/stickers/assets/HAPPY01.png]"
+
+
+def test_written_as_a_list_still_reads_back_canonical(registered, library):
+    chain = tag_codec.parse('收到 [meme, emotion=happy, tags=["捧场"]]')
+    import asyncio
+
+    resolved = asyncio.run(meme_stickers.process_outbound_message_chain(chain))
+    assert tag_codec.render(resolved) == "收到 [meme, id=happy01, summary=happy nod, url=/api/stickers/assets/HAPPY01.png]"
+
+
+def test_meme_by_url_sends_that_image(registered, library):
+    segment = tag_codec.parse("[meme, url=https://x/old.png]")[0]
+    image = meme_tool.resolve_meme_segment(segment)
+    assert isinstance(image, Image) and image.media.url == "https://x/old.png"
+    assert tag_codec.render(image) == "[meme, summary=表情包, url=https://x/old.png]"
+
+
+def test_summary_with_brackets_or_commas_keeps_the_tag_parseable(registered):
+    tag = meme_segment.sent_meme_tag("s1", "见到[酱油],就回这张", "https://x/a.png")
+    segment = tag_codec.parse(tag)[0]
+    assert meme_segment.is_meme_segment(segment) and segment.data["id"] == "s1"

@@ -482,7 +482,14 @@ def mark_sticker_sent(session_ctx: Any) -> None:
 
 
 def resolve_meme_segment(segment: ExtensionSegment, session_ctx: Any = None) -> Optional[Image]:
+    from .segment import sent_meme_tag
+
     data = segment.data
+    if data.get("url") and not data.get("id"):
+        # [meme, url=...]：照着历史里那张发，地址就是图本身
+        url = to_absolute_url(str(data["url"]))
+        summary = str(data.get("summary") or "表情包")
+        return Image(media=MediaRef(url=url), summary=summary, extra={"agent_tag": sent_meme_tag("", summary, url)})
     selected = _select_sticker(
         sticker_id=data.get("id") or "",
         query=data.get("query") or "",
@@ -493,9 +500,14 @@ def resolve_meme_segment(segment: ExtensionSegment, session_ctx: Any = None) -> 
     )
     if not selected:
         return None
+    url = to_absolute_url(str(selected.get("send_url") or selected.get("url") or ""))
+    summary = str(data.get("summary") or selected.get("summary") or "表情包")
     return Image(
-        media=MediaRef(url=to_absolute_url(str(selected.get("send_url") or selected.get("url") or ""))),
-        summary=str(data.get("summary") or selected.get("summary") or "表情包"),
+        media=MediaRef(url=url),
+        summary=summary,
+        # 历史里写回规范的 [meme, id=..., summary=..., url=...]：她看到自己发表情包的样子永远是对的，
+        # url 留给图生图、视觉识别这些工具用
+        extra={"agent_tag": sent_meme_tag(str(selected.get("id") or ""), summary, url)},
     )
 
 
