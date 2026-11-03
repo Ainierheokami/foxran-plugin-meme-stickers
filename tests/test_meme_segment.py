@@ -199,3 +199,30 @@ def test_tags_written_as_a_list_do_not_leave_a_bracket_behind(registered):
     assert len(chain) == 2
     assert chain[0] == Text(text="哎呀 这么黏 ")
     assert chain[1].data == {"emotion": "shy", "tags": ["害羞", "撒娇"]}
+
+
+def test_a_big_animation_from_the_media_cache_is_shrunk_into_the_library(tmp_path, monkeypatch):
+    """2026-11-03：video_gen 出的 28MB GIF 收藏时报「表情包文件过大」，还绕公网下载了 47 秒。"""
+    import io
+    import json
+    import os
+
+    from PIL import Image as PILImage
+
+    from app.media import cache_store
+
+    frames = [PILImage.frombytes("RGB", (600, 600), os.urandom(600 * 600 * 3)) for _ in range(3)]
+    buffer = io.BytesIO()
+    frames[0].save(buffer, format="GIF", save_all=True, append_images=frames[1:], duration=80, loop=0)
+    (tmp_path / "ABC.gif").write_bytes(buffer.getvalue())
+    monkeypatch.setattr(cache_store, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(cache_store, "load_index", lambda: {"ABC": {"filename": "ABC.gif"}})
+    monkeypatch.setattr(meme_tool, "MAX_STICKER_BYTES", len(buffer.getvalue()) // 2)
+    monkeypatch.setattr(meme_tool, "urlopen", lambda *a, **k: (_ for _ in ()).throw(AssertionError("不该走网络")))
+
+    content, content_type, name = meme_tool._read_sticker_source("https://api.example.test/api/media/cache/ABC")
+
+    assert content_type == "image/webp" and name == "ABC.webp"
+    assert len(content) <= meme_tool.MAX_STICKER_BYTES
+    with PILImage.open(io.BytesIO(content)) as stored:
+        assert stored.n_frames == 3 and max(stored.size) <= 512

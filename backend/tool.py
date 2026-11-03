@@ -34,6 +34,14 @@ IMAGE_TAG_RE = re.compile(
     r"\[image,\s*url=(?P<url>[^,\]\s]+?)(?:\s*,\s*summary=(?P<summary>\[[^\]]*\]|[^\]]+?))?\s*\]"
 )
 MAX_STICKER_BYTES = 15 * 1024 * 1024
+# 收进库之前能读多大的原图：超过 MAX_STICKER_BYTES 的动图（video_gen 出的 GIF 常有二三十 MB）
+# 先缩成 WebP 再存，不直接拒收。
+MAX_SOURCE_BYTES = 80 * 1024 * 1024
+_LIBRARY_SIDES = (512, 400, 320, 256)
+_LIBRARY_QUALITY = 80
+_LIBRARY_MAX_FRAMES = 240
+# 收藏时同步压缩：WebP 最慢档 120 帧要三四分钟，用快档。
+_LIBRARY_METHOD = 1
 # Library reads and writes come from the event loop and from worker threads;
 # without the lock a reader can catch a half-written file and save an empty library.
 _LIBRARY_LOCK = threading.RLock()
@@ -112,6 +120,43 @@ def _ext_from_content_type(content_type: str, filename: str = "") -> str:
     return ext[:12]
 
 
+def _local_media_cache_path(url: str) -> Optional[Path]:
+    """本服务媒体缓存（/api/media/cache/<id>）直接读本地文件，不绕公网下载。"""
+    path = urlparse(url).path if "://" in url else url
+    marker = "/api/media/cache/"
+    if marker not in path:
+        return None
+    cache_id = path.split(marker, 1)[1].split("/", 1)[0]
+    try:
+        from app.media.cache_store import CACHE_DIR, load_index
+
+        entry = load_index().get(cache_id)
+    except Exception:
+        return None
+    if not isinstance(entry, dict) or not entry.get("filename"):
+        return None
+    file_path = CACHE_DIR / str(entry["filename"])
+    return file_path if file_path.is_file() else None
+
+
+def _fit_library(content: bytes, content_type: str, filename: str) -> tuple[bytes, str, str]:
+    """超过库上限的图缩成 WebP（动图保留动画）；缩不下来才报过大。"""
+    if len(content) <= MAX_STICKER_BYTES:
+        return content, content_type, filename
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(content)) as img:
+            for side in _LIBRARY_SIDES:
+                encoded = _encode_webp(img, min(side, max(img.size)), _LIBRARY_QUALITY, _LIBRARY_MAX_FRAMES, _LIBRARY_METHOD)
+                if encoded and len(encoded) <= MAX_STICKER_BYTES:
+                    logger.info(f"表情包原图 {len(content) // 1024}KB 超过库上限，缩成 {side}px WebP {len(encoded) // 1024}KB 再存")
+                    return encoded, "image/webp", f"{Path(filename).stem or 'sticker'}.webp"
+    except Exception as e:
+        logger.debug(f"表情包缩小失败: {e}")
+    raise ValueError("表情包文件过大")
+
+
 def _read_sticker_source(url: str) -> tuple[bytes, str, str]:
     url = (url or "").strip()
     if not url:
@@ -121,15 +166,22 @@ def _read_sticker_source(url: str) -> tuple[bytes, str, str]:
     if asset_path:
         return asset_path.read_bytes(), mimetypes.guess_type(asset_path.name)[0] or "application/octet-stream", asset_path.name
 
+    cached = _local_media_cache_path(url)
+    if cached:
+        if cached.stat().st_size > MAX_SOURCE_BYTES:
+            raise ValueError("表情包文件过大")
+        content_type = mimetypes.guess_type(cached.name)[0] or "application/octet-stream"
+        return _fit_library(cached.read_bytes(), content_type, cached.name)
+
     parsed = urlparse(url)
     if parsed.scheme in ("http", "https"):
         request = Request(url, headers={"User-Agent": "FoxranStickerStore/1.0"})
         with urlopen(request, timeout=20) as response:
-            content = response.read(MAX_STICKER_BYTES + 1)
+            content = response.read(MAX_SOURCE_BYTES + 1)
             content_type = response.headers.get("Content-Type", "application/octet-stream")
-        if len(content) > MAX_STICKER_BYTES:
+        if len(content) > MAX_SOURCE_BYTES:
             raise ValueError("表情包文件过大")
-        return content, content_type, _safe_filename(Path(parsed.path).name, "remote_sticker")
+        return _fit_library(content, content_type, _safe_filename(Path(parsed.path).name, "remote_sticker"))
 
     if parsed.scheme == "file":
         path = Path(parsed.path)
@@ -137,10 +189,9 @@ def _read_sticker_source(url: str) -> tuple[bytes, str, str]:
         path = Path(url)
     if not path.exists() or not path.is_file():
         raise ValueError(f"表情包源文件不存在: {url}")
-    content = path.read_bytes()
-    if len(content) > MAX_STICKER_BYTES:
+    if path.stat().st_size > MAX_SOURCE_BYTES:
         raise ValueError("表情包文件过大")
-    return content, mimetypes.guess_type(path.name)[0] or "application/octet-stream", path.name
+    return _fit_library(path.read_bytes(), mimetypes.guess_type(path.name)[0] or "application/octet-stream", path.name)
 
 
 def persist_sticker_source(url: str, sticker_id: str = "") -> Dict[str, Any]:
@@ -207,7 +258,7 @@ def _resolve_sticker_source_path(item: Dict[str, Any]) -> Optional[Path]:
     return None
 
 
-def _encode_webp(img: Any, side: int, quality: int, max_frames: int) -> Optional[bytes]:
+def _encode_webp(img: Any, side: int, quality: int, max_frames: int, method: int = 6) -> Optional[bytes]:
     from PIL import Image, ImageSequence
 
     try:
@@ -235,7 +286,7 @@ def _encode_webp(img: Any, side: int, quality: int, max_frames: int) -> Optional
             duration=durations,
             loop=0,
             quality=quality,
-            method=6,
+            method=method,
         )
         return buffer.getvalue()
 
@@ -243,7 +294,7 @@ def _encode_webp(img: Any, side: int, quality: int, max_frames: int) -> Optional
     still.thumbnail((side, side), resample)
     if still.mode not in ("RGB", "RGBA"):
         still = still.convert("RGBA")
-    still.save(buffer, format="WEBP", quality=quality, method=6)
+    still.save(buffer, format="WEBP", quality=quality, method=method)
     return buffer.getvalue()
 
 
