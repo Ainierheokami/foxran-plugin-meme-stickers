@@ -26,7 +26,8 @@ def normalize_meme_tags(tags: Optional[Union[str, Iterable[str]]]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for tag in raw_tags:
-        clean = str(tag).strip()
+        # Models sometimes write a list: tags=["害羞","撒娇"].
+        clean = str(tag).strip().strip("[]\"'“”‘’").strip()
         if clean and clean not in seen:
             seen.add(clean)
             result.append(clean)

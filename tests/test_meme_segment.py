@@ -191,3 +191,11 @@ def test_only_sendable_select_results_are_shown_to_the_user():
     assert visibility(operation="select", allow_send="false") == "agent_only"
     for operation in ("list", "collect", "update", "delete"):
         assert visibility(operation=operation) == "agent_only"
+
+
+def test_tags_written_as_a_list_do_not_leave_a_bracket_behind(registered):
+    chain = tag_codec.parse('哎呀 这么黏 [meme, emotion=shy, tags=["害羞","撒娇"]]')
+
+    assert len(chain) == 2
+    assert chain[0] == Text(text="哎呀 这么黏 ")
+    assert chain[1].data == {"emotion": "shy", "tags": ["害羞", "撒娇"]}
